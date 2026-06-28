@@ -435,7 +435,7 @@ public sealed class LayoutEngine
         FoFlow? flowFo = seq.Flow;
         if (flowFo is not null)
         {
-            foreach (FObj child in flowFo.ChildObjects)
+            foreach (FObj child in ExpandWrappers(flowFo.ChildObjects))
             {
                 switch (child)
                 {
@@ -1400,6 +1400,32 @@ public sealed class LayoutEngine
     // ----- Block stacking + pagination ------------------------------------------------------
 
     /// <summary>
+    /// Expands transparent <c>fo:wrapper</c>s in a block-stacking child sequence: a wrapper carrying
+    /// block-level children contributes those children in place (recursively), so the wrapper itself
+    /// generates no area while its children stack in the parent's flow. A wrapper with only inline
+    /// content (or any non-wrapper FO) passes through unchanged -- inline wrappers are flattened by
+    /// <see cref="InlineContent"/>. The children keep the wrapper as their parent, so the wrapper's
+    /// inherited properties still reach them.
+    /// </summary>
+    private static IEnumerable<FObj> ExpandWrappers(IEnumerable<FObj> children)
+    {
+        foreach (FObj child in children)
+        {
+            if (child is FoWrapper { HasBlockLevelChildren: true } wrapper)
+            {
+                foreach (FObj inner in ExpandWrappers(wrapper.BlockLevelChildren))
+                {
+                    yield return inner;
+                }
+            }
+            else
+            {
+                yield return child;
+            }
+        }
+    }
+
+    /// <summary>
     /// Per-page-sequence layout state: holds the current page, the vertical cursor and the page
     /// geometry, and drives block stacking, line breaking and pagination.
     /// </summary>
@@ -1831,7 +1857,7 @@ public sealed class LayoutEngine
             double childLeft = contentLeft + block.StartIndent.Millipoints;
             double childWidth = Math.Max(0,
                 contentWidth - block.StartIndent.Millipoints - block.EndIndent.Millipoints);
-            foreach (FObj child in block.ChildObjects)
+            foreach (FObj child in ExpandWrappers(block.ChildObjects))
             {
                 // break-before/after only force pagination in the paginating main flow; inside a
                 // relocatable buffer (table cell / list body) there is no page to break to.
@@ -2683,7 +2709,7 @@ public sealed class LayoutEngine
         /// </summary>
         private void DispatchBlockLevel(IEnumerable<FObj> children, IBlockTarget target, double widthMpt)
         {
-            foreach (FObj child in children)
+            foreach (FObj child in ExpandWrappers(children))
             {
                 switch (child)
                 {

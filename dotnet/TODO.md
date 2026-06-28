@@ -128,6 +128,10 @@ package, as a rough size signal.
       on each continuation page. Scoped to rows with no row-spanning cell (those still paint at their
       origin page); cuts fall between lines, with non-text content (images/vectors) assigned whole to the
       slice its top falls in.
+- [x] **`fo:wrapper`** — the transparent grouping FO: inline content is flattened with the wrapper's
+      inherited style (font/colour/…); block-level children stack in the parent flow (the wrapper itself
+      generates no area). Nested wrappers expand recursively. Previously a block-level wrapper's content
+      was silently dropped.
 - [~] **`fo:float`** — `float="before"` is anchored at the region top (placed immediately when the
       region is still empty, else deferred to the top of the next region, mirroring FOP); `float="none"`
       lays out in the normal flow. Side floats (`left`/`right`/`start`/`end`) are parsed and mapped but

@@ -725,6 +725,35 @@ public sealed class FoFootnoteBody(PropertyList properties) : FObj(properties)
 }
 
 /// <summary>
+/// A neutral wrapper, <c>fo:wrapper</c>. A transparent grouping FO that generates no area of its own:
+/// it exists only to carry inherited properties (font, colour, language, …) onto its children. Its
+/// children may be inline-level (flattened in place with the wrapper's resolved style, since a
+/// <see cref="PropertyList"/> inherits from its parent FO) or block-level (stacked in the parent's
+/// flow). The wrapper itself is skipped; only its children produce areas.
+/// </summary>
+public sealed class FoWrapper(PropertyList properties) : FObj(properties)
+{
+    /// <inheritdoc/>
+    public override string LocalName => "wrapper";
+
+    /// <summary>
+    /// The block-level children of this wrapper (blocks, tables, lists, containers, floats), plus any
+    /// nested wrappers (so a wrapper-of-wrappers is expanded transparently by the layout engine).
+    /// </summary>
+    public IEnumerable<FObj> BlockLevelChildren =>
+        ChildObjects.Where(c => c is FoBlock or FoTable or FoListBlock or FoBlockContainer or FoFloat or FoWrapper);
+
+    /// <summary>
+    /// Whether this wrapper contains block-level content (directly, or through a nested wrapper). A
+    /// wrapper with block content is stacked in the block flow; a wrapper with only inline content is
+    /// flattened inline.
+    /// </summary>
+    public bool HasBlockLevelChildren => ChildObjects.Any(c =>
+        c is FoBlock or FoTable or FoListBlock or FoBlockContainer or FoFloat
+        || (c is FoWrapper nested && nested.HasBlockLevelChildren));
+}
+
+/// <summary>
 /// A float, <c>fo:float</c>. An out-of-line block-level FO whose block content is placed out of the
 /// normal flow according to its <c>float</c> property: a <c>before</c> float is anchored at the top of
 /// the region, while <c>none</c> lays the content out in place. (Side floats are parsed but not yet
