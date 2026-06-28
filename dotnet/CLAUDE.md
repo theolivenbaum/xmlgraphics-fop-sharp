@@ -193,6 +193,9 @@ A **working end-to-end FO→PDF pipeline** exists for a substantial XSL-FO subse
 - **footnotes** (`fo:footnote`/`footnote-body`, rendered at the page bottom with the reserve
   reducing body height) and **`fo:page-number-citation`/`-last`** (forward/backward references
   resolved by a two-pass layout);
+- **`fo:float`** (`float="before"` anchored at the region top -- placed now when the region is empty,
+  else deferred to the top of the next region; `none`/side floats lay out in-flow, side-float
+  wrap-around still to come);
 - **markers** (`fo:marker`/`retrieve-marker`, e.g. "current chapter" running headers) and
   **side regions** (`fo:region-start`/`end`);
 - **hyperlinks** (`fo:basic-link` → PDF internal/external link annotations) and **leaders**
@@ -219,7 +222,7 @@ A **working end-to-end FO→PDF pipeline** exists for a substantial XSL-FO subse
   `baseline - 1.1*capHeight`, line-through `baseline - 0.45*capHeight`); and **letter-spacing**
   (per-glyph tracking between glyphs, `(n-1)` gaps per word, drawn glyph-by-glyph).
 
-The solution has 17 library projects and **998 passing tests** on .NET 10. See `samples/hello.fo`
+The solution has 17 library projects and **1,010 passing tests** on .NET 10. See `samples/hello.fo`
 (a clickable TOC with leaders, links, a marker header, and page-number citations) and
 `samples/svg-decoration.fo` (embedded SVG, text-decoration and letter-spacing). The `fop` CLI renders
 a document with `fop in.fo out.pdf`.

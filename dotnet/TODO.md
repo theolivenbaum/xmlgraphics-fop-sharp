@@ -128,9 +128,14 @@ package, as a rough size signal.
       on each continuation page. Scoped to rows with no row-spanning cell (those still paint at their
       origin page); cuts fall between lines, with non-text content (images/vectors) assigned whole to the
       slice its top falls in.
-- [ ] Total-fit *page* breaking, floats. (Residual approximations: footnote reserve is greedy not
-      iterative; a row-spanning cell crossing a page break paints on its origin page only; a row that
-      fits on a fresh page but not the remaining space still moves whole rather than splitting;
+- [~] **`fo:float`** — `float="before"` is anchored at the region top (placed immediately when the
+      region is still empty, else deferred to the top of the next region, mirroring FOP); `float="none"`
+      lays out in the normal flow. Side floats (`left`/`right`/`start`/`end`) are parsed and mapped but
+      not yet flowed around — they currently lay out in-flow (no text wrap). In a buffered context
+      (table cell, list body) a float's content is laid out in place.
+- [ ] Total-fit *page* breaking; side-float flow-around. (Residual approximations: footnote reserve is
+      greedy not iterative; a row-spanning cell crossing a page break paints on its origin page only; a
+      row that fits on a fresh page but not the remaining space still moves whole rather than splitting;
       citation-last equals the single recorded page under the flat area model.)
 
 ## Phase 6 — Renderers  `[ ]`  (~79,000 LOC)

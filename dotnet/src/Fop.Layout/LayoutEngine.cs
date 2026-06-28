@@ -459,6 +459,9 @@ public sealed class LayoutEngine
                         flow.LayOutBlockContainer(container, geometry.ContentLeftMpt, geometry.ContentWidthMpt);
                         flow.ApplyBreak(container.BreakAfter);
                         break;
+                    case FoFloat floatFo:
+                        flow.LayOutFloat(floatFo, geometry.ContentLeftMpt, geometry.ContentWidthMpt);
+                        break;
                 }
             }
         }
@@ -1445,6 +1448,15 @@ public sealed class LayoutEngine
         private readonly List<(BufferedSink Body, double HeightMpt)> pendingFootnotes = new();
 
         /// <summary>
+        /// Before-floats deferred to the top of the next region: a before-float encountered when the
+        /// current region already holds content cannot push that content down, so it waits and is placed
+        /// at the top of the next page that starts (mirroring FOP, which anchors a before-float at the
+        /// region top). Each entry carries the float's buffered content, its height and its source FO
+        /// (so ids inside it are attributed to the page it lands on).
+        /// </summary>
+        private readonly List<(BufferedSink Content, double HeightMpt, FObj Source)> pendingBeforeFloats = new();
+
+        /// <summary>
         /// The bottom of the body content rectangle, reduced by this page's footnote reserve. Body
         /// content paginates against this effective bottom, so reserving footnote space stops body
         /// content higher up the page.
@@ -1538,8 +1550,101 @@ public sealed class LayoutEngine
             footnoteReserveMpt = 0;
         }
 
-        /// <summary>Finalizes the current page, flushing any pending footnote bodies. Called at sequence end.</summary>
-        public void FinishPage() => FlushFootnotes();
+        /// <summary>
+        /// Finalizes the current page, flushing any pending footnote bodies. Called at sequence end. A
+        /// before-float still pending here (encountered after content with no later page break) cannot
+        /// share the current region, so it is carried onto one final region of its own.
+        /// </summary>
+        public void FinishPage()
+        {
+            FlushFootnotes();
+            if (pendingBeforeFloats.Count > 0)
+            {
+                // StartNewPage places the pending before-floats at the top of the fresh region.
+                StartNewPage();
+            }
+        }
+
+        /// <summary>
+        /// Lays out an <c>fo:float</c> in the main flow. A <c>before</c> float is anchored at the top of
+        /// the region: placed immediately when the current region is still empty, otherwise deferred to
+        /// the top of the next region (see <see cref="pendingBeforeFloats"/>). A <c>none</c> float -- and,
+        /// for now, an unsupported side float -- lays its block content out in the normal flow.
+        /// </summary>
+        public void LayOutFloat(FoFloat floatFo, double leftMpt, double widthMpt)
+        {
+            if (floatFo.Float != FloatKind.Before)
+            {
+                // none / side float: lay the content out in the normal flow (no flow-around yet).
+                foreach (FObj child in floatFo.BlockLevelChildren)
+                {
+                    DispatchFlowChild(child, leftMpt, widthMpt);
+                }
+
+                return;
+            }
+
+            EnsurePage();
+            var buffer = new BufferedSink();
+            double height = LayOutBlockLevelIntoBuffer(floatFo.BlockLevelChildren, buffer, widthMpt);
+            if (height <= 0)
+            {
+                return;
+            }
+
+            if (cursorY <= geometry.ContentTopMpt + 0.5)
+            {
+                // The region is empty: place the float at the top now; normal content flows below it.
+                buffer.FlushTo(new PageSink(page!), leftMpt, cursorY);
+                engine.RecordIdsInSubtree(floatFo, currentPageNumber, IndexOfPage(page!));
+                cursorY += height;
+            }
+            else
+            {
+                // Content is already on this region: defer to the top of the next region.
+                pendingBeforeFloats.Add((buffer, height, floatFo));
+            }
+        }
+
+        /// <summary>Places any deferred before-floats at the current cursor (the top of a fresh region).</summary>
+        private void PlacePendingBeforeFloats()
+        {
+            if (pendingBeforeFloats.Count == 0 || page is null)
+            {
+                return;
+            }
+
+            var sink = new PageSink(page);
+            int pageIndex = IndexOfPage(page);
+            foreach ((BufferedSink content, double height, FObj source) in pendingBeforeFloats)
+            {
+                content.FlushTo(sink, geometry.ContentLeftMpt, cursorY);
+                engine.RecordIdsInSubtree(source, currentPageNumber, pageIndex);
+                cursorY += height;
+            }
+
+            pendingBeforeFloats.Clear();
+        }
+
+        /// <summary>Dispatches one block-level flow child to the matching flow-level layout method.</summary>
+        private void DispatchFlowChild(FObj child, double leftMpt, double widthMpt)
+        {
+            switch (child)
+            {
+                case FoBlock block:
+                    LayOutBlock(block, leftMpt, widthMpt);
+                    break;
+                case FoTable table:
+                    LayOutTable(table, leftMpt, widthMpt);
+                    break;
+                case FoListBlock list:
+                    LayOutList(list, leftMpt, widthMpt);
+                    break;
+                case FoBlockContainer container:
+                    LayOutBlockContainer(container, leftMpt, widthMpt);
+                    break;
+            }
+        }
 
         /// <summary>Ensures a page exists, creating a blank one if none has been started yet.</summary>
         public void EnsurePage()
@@ -2567,6 +2672,17 @@ public sealed class LayoutEngine
         private double LayOutBlockLevelIntoBuffer(IEnumerable<FObj> children, BufferedSink buffer, double widthMpt)
         {
             var target = new BufferTarget(buffer);
+            DispatchBlockLevel(children, target, widthMpt);
+            return target.LocalCursor;
+        }
+
+        /// <summary>
+        /// Dispatches each block-level child onto <paramref name="target"/> (a buffer). An
+        /// <c>fo:float</c> in a buffered context cannot be anchored to a region top, so its block content
+        /// is laid out in place on the same target (preserving cursor continuity).
+        /// </summary>
+        private void DispatchBlockLevel(IEnumerable<FObj> children, IBlockTarget target, double widthMpt)
+        {
             foreach (FObj child in children)
             {
                 switch (child)
@@ -2586,10 +2702,11 @@ public sealed class LayoutEngine
                     case FoInstreamForeignObject foreign:
                         LayOutInstreamForeignObject(foreign, 0, widthMpt, target);
                         break;
+                    case FoFloat floatFo:
+                        DispatchBlockLevel(floatFo.BlockLevelChildren, target, widthMpt);
+                        break;
                 }
             }
-
-            return target.LocalCursor;
         }
 
         // ----- Lists ------------------------------------------------------------------------
@@ -3022,6 +3139,10 @@ public sealed class LayoutEngine
             {
                 carryover[cls] = content;
             }
+
+            // Any before-floats deferred from an earlier region are anchored at the top of this fresh
+            // region, ahead of the normal flow content (which will paginate below them).
+            PlacePendingBeforeFloats();
         }
 
         /// <summary>

@@ -724,6 +724,25 @@ public sealed class FoFootnoteBody(PropertyList properties) : FObj(properties)
         ChildObjects.Where(c => c is FoBlock or FoTable or FoListBlock);
 }
 
+/// <summary>
+/// A float, <c>fo:float</c>. An out-of-line block-level FO whose block content is placed out of the
+/// normal flow according to its <c>float</c> property: a <c>before</c> float is anchored at the top of
+/// the region, while <c>none</c> lays the content out in place. (Side floats are parsed but not yet
+/// flowed around; the layout engine treats them as in-flow.)
+/// </summary>
+public sealed class FoFloat(PropertyList properties) : FObj(properties)
+{
+    /// <inheritdoc/>
+    public override string LocalName => "float";
+
+    /// <summary>The resolved <c>float</c> kind.</summary>
+    public FloatKind Float => Properties.Float;
+
+    /// <summary>The block-level children of this float (blocks, tables, lists), in document order.</summary>
+    public IEnumerable<FObj> BlockLevelChildren =>
+        ChildObjects.Where(c => c is FoBlock or FoTable or FoListBlock or FoBlockContainer);
+}
+
 /// <summary>An external image, <c>fo:external-graphic</c>.</summary>
 public sealed class FoExternalGraphic(PropertyList properties) : FObj(properties)
 {

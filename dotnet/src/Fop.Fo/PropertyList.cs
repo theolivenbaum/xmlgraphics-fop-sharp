@@ -216,6 +216,9 @@ public sealed class PropertyList
     /// <summary>The resolved <c>break-after</c> (not inherited; defaults to <see cref="BreakKind.Auto"/>).</summary>
     public BreakKind BreakAfter => FoEnumParsing.ParseBreak(GetRaw("break-after"));
 
+    /// <summary>The resolved <c>float</c> (not inherited; defaults to <see cref="FloatKind.None"/>).</summary>
+    public FloatKind Float => FoEnumParsing.ParseFloat(GetRaw("float"));
+
     /// <summary>
     /// The resolved <c>keep-together</c> within-page strength (not inherited; defaults to
     /// <see cref="KeepStrength.Auto"/>). The <c>keep-together.within-page</c> component takes

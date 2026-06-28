@@ -196,6 +196,7 @@ public static class FoTreeBuilder
         "page-number-citation-last" => new FoPageNumberCitationLast(properties),
         "footnote" => new FoFootnote(properties),
         "footnote-body" => new FoFootnoteBody(properties),
+        "float" => new FoFloat(properties),
         "external-graphic" => new FoExternalGraphic(properties),
         "instream-foreign-object" => new FoInstreamForeignObject(properties),
         "bookmark-tree" => new FoBookmarkTree(properties),
