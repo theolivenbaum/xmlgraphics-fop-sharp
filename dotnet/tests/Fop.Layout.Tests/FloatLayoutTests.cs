@@ -100,6 +100,49 @@ public sealed class FloatLayoutTests
     }
 
     [Fact]
+    public void StartFloatShiftsFollowingContentIntoTheRemainingColumn()
+    {
+        // An 80pt left float at the flow start reserves the left 80000mpt for its height (one line). The
+        // following block wraps into the remaining column: shifted right to x=80000 and beside the float
+        // (same baseline, since a side float does not advance the main cursor).
+        AreaTree tree = LayOut("""
+            <fo:float float="left" width="80pt"><fo:block>F</fo:block></fo:float>
+            <fo:block>X</fo:block>
+            <fo:block>Y</fo:block>
+            """);
+        PageArea page = Assert.Single(tree.Pages);
+
+        TextRun f = page.TextRuns.Single(r => r.Text == "F");
+        TextRun x = page.TextRuns.Single(r => r.Text == "X");
+        TextRun y = page.TextRuns.Single(r => r.Text == "Y");
+
+        Assert.Equal(0, f.XMpt, 3);          // float content at the left edge
+        Assert.Equal(80_000, x.XMpt, 3);     // first block beside the float
+        Assert.Equal(9_000, f.BaselineYMpt, 3);
+        Assert.Equal(9_000, x.BaselineYMpt, 3); // same band as the float
+        Assert.Equal(0, y.XMpt, 3);          // second block has cleared the float -> full width
+        Assert.Equal(21_000, y.BaselineYMpt, 3);
+    }
+
+    [Fact]
+    public void EndFloatNarrowsFollowingContentWithoutShiftingIt()
+    {
+        // An 80pt right float reserves the right 80000mpt. The float content sits at the right edge
+        // (x=120000); the following block keeps the left edge (x=0) but is narrowed.
+        AreaTree tree = LayOut("""
+            <fo:float float="right" width="80pt"><fo:block>F</fo:block></fo:float>
+            <fo:block>X</fo:block>
+            """);
+        PageArea page = Assert.Single(tree.Pages);
+
+        TextRun f = page.TextRuns.Single(r => r.Text == "F");
+        TextRun x = page.TextRuns.Single(r => r.Text == "X");
+        Assert.Equal(120_000, f.XMpt, 3); // float content hugs the right edge
+        Assert.Equal(0, x.XMpt, 3);       // following block keeps the left edge
+        Assert.Equal(9_000, x.BaselineYMpt, 3);
+    }
+
+    [Fact]
     public void FloatNoneLaysOutInTheNormalFlow()
     {
         // float="none" is in-flow: the float's block sits between the two surrounding blocks.

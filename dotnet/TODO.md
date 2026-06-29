@@ -132,15 +132,19 @@ package, as a rough size signal.
       inherited style (font/colour/…); block-level children stack in the parent flow (the wrapper itself
       generates no area). Nested wrappers expand recursively. Previously a block-level wrapper's content
       was silently dropped.
-- [~] **`fo:float`** — `float="before"` is anchored at the region top (placed immediately when the
-      region is still empty, else deferred to the top of the next region, mirroring FOP); `float="none"`
-      lays out in the normal flow. Side floats (`left`/`right`/`start`/`end`) are parsed and mapped but
-      not yet flowed around — they currently lay out in-flow (no text wrap). In a buffered context
-      (table cell, list body) a float's content is laid out in place.
-- [ ] Total-fit *page* breaking; side-float flow-around. (Residual approximations: footnote reserve is
-      greedy not iterative; a row-spanning cell crossing a page break paints on its origin page only; a
-      row that fits on a fresh page but not the remaining space still moves whole rather than splitting;
-      citation-last equals the single recorded page under the flat area model.)
+- [x] **`fo:float`** — `float="before"` is anchored at the region top (placed immediately when the
+      region is still empty, else deferred to the top of the next region, mirroring FOP). `start`/`end`
+      side floats are placed against the region edge and reserve a vertical band: following flow blocks
+      wrap into the remaining column (narrowed, and shifted for a start float) until the cursor clears
+      the float. `float="none"` lays out in the normal flow; in a buffered context (table cell, list
+      body) a float's content is laid out in place. Float width resolves from the float's own `width`,
+      else a child block-container's, else half the available width. Side-float residuals: a single
+      block that begins beside a float keeps the narrowed column for its whole height (no mid-block
+      reflow to full width below the float); side floats are page-local and clamped to the region bottom.
+- [ ] Total-fit *page* breaking. (Residual approximations: footnote reserve is greedy not iterative; a
+      row-spanning cell crossing a page break paints on its origin page only; a row that fits on a fresh
+      page but not the remaining space still moves whole rather than splitting; citation-last equals the
+      single recorded page under the flat area model.)
 
 ## Phase 6 — Renderers  `[ ]`  (~79,000 LOC)
 

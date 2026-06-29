@@ -437,26 +437,28 @@ public sealed class LayoutEngine
         {
             foreach (FObj child in ExpandWrappers(flowFo.ChildObjects))
             {
+                // The content band is taken after any forced break (which may start a fresh, float-free
+                // page), so a block wraps into the column left by an active side float.
                 switch (child)
                 {
                     case FoBlock block:
                         flow.ApplyBreak(block.BreakBefore);
-                        flow.LayOutBlock(block, geometry.ContentLeftMpt, geometry.ContentWidthMpt);
+                        flow.LayOutBandedBlock(block);
                         flow.ApplyBreak(block.BreakAfter);
                         break;
                     case FoTable table:
                         flow.ApplyBreak(table.BreakBefore);
-                        flow.LayOutTable(table, geometry.ContentLeftMpt, geometry.ContentWidthMpt);
+                        flow.LayOutBandedTable(table);
                         flow.ApplyBreak(table.BreakAfter);
                         break;
                     case FoListBlock list:
                         flow.ApplyBreak(list.BreakBefore);
-                        flow.LayOutList(list, geometry.ContentLeftMpt, geometry.ContentWidthMpt);
+                        flow.LayOutBandedList(list);
                         flow.ApplyBreak(list.BreakAfter);
                         break;
                     case FoBlockContainer container:
                         flow.ApplyBreak(container.BreakBefore);
-                        flow.LayOutBlockContainer(container, geometry.ContentLeftMpt, geometry.ContentWidthMpt);
+                        flow.LayOutBandedBlockContainer(container);
                         flow.ApplyBreak(container.BreakAfter);
                         break;
                     case FoFloat floatFo:
@@ -1483,6 +1485,14 @@ public sealed class LayoutEngine
         private readonly List<(BufferedSink Content, double HeightMpt, FObj Source)> pendingBeforeFloats = new();
 
         /// <summary>
+        /// Side floats active on the current page: each reserves a vertical band on the start (left) or
+        /// end (right) edge of the content region. A flow block that begins while a band is active is
+        /// laid out into the remaining column (narrowed and, for a start float, shifted), so following
+        /// content wraps beside the float. Bands are page-local (cleared when a new page starts).
+        /// </summary>
+        private readonly List<(FloatKind Side, double TopMpt, double BottomMpt, double WidthMpt)> sideFloats = new();
+
+        /// <summary>
         /// The bottom of the body content rectangle, reduced by this page's footnote reserve. Body
         /// content paginates against this effective bottom, so reserving footnote space stops body
         /// content higher up the page.
@@ -1594,20 +1604,26 @@ public sealed class LayoutEngine
         /// <summary>
         /// Lays out an <c>fo:float</c> in the main flow. A <c>before</c> float is anchored at the top of
         /// the region: placed immediately when the current region is still empty, otherwise deferred to
-        /// the top of the next region (see <see cref="pendingBeforeFloats"/>). A <c>none</c> float -- and,
-        /// for now, an unsupported side float -- lays its block content out in the normal flow.
+        /// the top of the next region (see <see cref="pendingBeforeFloats"/>). A <c>start</c>/<c>end</c>
+        /// side float is placed against the region's start/end edge at the current cursor and reserves a
+        /// vertical band, so following flow blocks wrap into the remaining column (see
+        /// <see cref="sideFloats"/>). A <c>none</c> float lays its block content out in the normal flow.
         /// </summary>
         public void LayOutFloat(FoFloat floatFo, double leftMpt, double widthMpt)
         {
-            if (floatFo.Float != FloatKind.Before)
+            switch (floatFo.Float)
             {
-                // none / side float: lay the content out in the normal flow (no flow-around yet).
-                foreach (FObj child in floatFo.BlockLevelChildren)
-                {
-                    DispatchFlowChild(child, leftMpt, widthMpt);
-                }
+                case FloatKind.None:
+                    foreach (FObj child in floatFo.BlockLevelChildren)
+                    {
+                        DispatchFlowChild(child, leftMpt, widthMpt);
+                    }
 
-                return;
+                    return;
+                case FloatKind.Start:
+                case FloatKind.End:
+                    LayOutSideFloat(floatFo);
+                    return;
             }
 
             EnsurePage();
@@ -1630,6 +1646,103 @@ public sealed class LayoutEngine
                 // Content is already on this region: defer to the top of the next region.
                 pendingBeforeFloats.Add((buffer, height, floatFo));
             }
+        }
+
+        /// <summary>
+        /// Places a start/end side float against the current content band's edge at the cursor and
+        /// registers a vertical band so subsequent flow blocks wrap beside it. The float content (and any
+        /// box) is laid into a buffer at the float's resolved width; the main cursor is not advanced
+        /// (content flows beside the float). The band is clamped to the region bottom.
+        /// </summary>
+        private void LayOutSideFloat(FoFloat floatFo)
+        {
+            EnsurePage();
+            (double bandLeft, double bandWidth) = ContentBand();
+
+            BoxProperties box = floatFo.Box;
+            double floatWidth = Math.Min(floatFo.ResolveSideFloatWidthMpt(bandWidth), bandWidth);
+            if (floatWidth <= 0)
+            {
+                return;
+            }
+
+            double contentWidth = Math.Max(0, floatWidth - box.LeftInsetMpt - box.RightInsetMpt);
+            var buffer = new BufferedSink();
+            double contentHeight = LayOutBlockLevelIntoBuffer(floatFo.BlockLevelChildren, buffer, contentWidth);
+            double floatHeight = contentHeight + box.TopInsetMpt + box.BottomInsetMpt;
+            if (floatHeight <= 0)
+            {
+                return;
+            }
+
+            // Start floats hug the band's left edge; end floats hug its right edge.
+            double floatLeft = floatFo.Float == FloatKind.Start
+                ? bandLeft
+                : bandLeft + bandWidth - floatWidth;
+            double top = cursorY;
+
+            var sink = new PageSink(page!);
+            EmitBox(sink, box, floatLeft, top, floatWidth, floatHeight);
+            buffer.FlushTo(sink, floatLeft + box.LeftInsetMpt, top + box.TopInsetMpt);
+            engine.RecordIdsInSubtree(floatFo, currentPageNumber, IndexOfPage(page!));
+
+            double bottom = Math.Min(top + floatHeight, geometry.ContentBottomMpt);
+            sideFloats.Add((floatFo.Float, top, bottom, floatWidth));
+        }
+
+        /// <summary>
+        /// The content band available to a flow block starting at the current cursor: the region content
+        /// rectangle narrowed by every side float whose vertical band the cursor falls within (a start
+        /// float shifts the left edge in and shrinks the width; an end float only shrinks the width).
+        /// </summary>
+        private (double Left, double Width) ContentBand()
+        {
+            double left = geometry.ContentLeftMpt;
+            double width = geometry.ContentWidthMpt;
+            foreach ((FloatKind side, double top, double bottom, double floatWidth) in sideFloats)
+            {
+                if (cursorY + 0.5 >= bottom)
+                {
+                    continue; // the cursor has cleared this float
+                }
+
+                if (side == FloatKind.Start)
+                {
+                    left += floatWidth;
+                }
+
+                width -= floatWidth;
+            }
+
+            return (left, Math.Max(0, width));
+        }
+
+        /// <summary>Lays out a flow block into the current content band (narrowed by active side floats).</summary>
+        public void LayOutBandedBlock(FoBlock block)
+        {
+            (double left, double width) = ContentBand();
+            LayOutBlock(block, left, width);
+        }
+
+        /// <summary>Lays out a flow table into the current content band.</summary>
+        public void LayOutBandedTable(FoTable table)
+        {
+            (double left, double width) = ContentBand();
+            LayOutTable(table, left, width);
+        }
+
+        /// <summary>Lays out a flow list into the current content band.</summary>
+        public void LayOutBandedList(FoListBlock list)
+        {
+            (double left, double width) = ContentBand();
+            LayOutList(list, left, width);
+        }
+
+        /// <summary>Lays out a flow block-container into the current content band.</summary>
+        public void LayOutBandedBlockContainer(FoBlockContainer container)
+        {
+            (double left, double width) = ContentBand();
+            LayOutBlockContainer(container, left, width);
         }
 
         /// <summary>Places any deferred before-floats at the current cursor (the top of a fresh region).</summary>
@@ -3156,6 +3269,9 @@ public sealed class LayoutEngine
             page = new PageArea(geometry.PageWidthMpt, geometry.PageHeightMpt);
             tree.AddPage(page);
             cursorY = geometry.ContentTopMpt;
+
+            // Side floats reserve space on the page they are anchored to; a fresh page starts clear.
+            sideFloats.Clear();
 
             // Snapshot the running carryover (markers from earlier pages of this sequence) into the new
             // page's record, so a retrieve-marker on this page can fall back to an earlier marker even

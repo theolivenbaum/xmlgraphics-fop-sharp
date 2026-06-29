@@ -767,9 +767,53 @@ public sealed class FoFloat(PropertyList properties) : FObj(properties)
     /// <summary>The resolved <c>float</c> kind.</summary>
     public FloatKind Float => Properties.Float;
 
+    /// <summary>The resolved box-model properties (border/padding/background) of the float.</summary>
+    public BoxProperties Box => Properties.GetBox();
+
+    /// <summary>The specified <c>width</c> of the float, or <c>null</c> for <c>auto</c>/unset.</summary>
+    public FoLength? Width
+    {
+        get
+        {
+            string? raw = Properties.GetRaw("width");
+            string? trimmed = raw?.Trim();
+            if (string.IsNullOrEmpty(trimmed) || trimmed.Equals("auto", StringComparison.OrdinalIgnoreCase))
+            {
+                return null;
+            }
+
+            return FoLength.TryParse(trimmed, Properties.FontSizeMpt);
+        }
+    }
+
     /// <summary>The block-level children of this float (blocks, tables, lists), in document order.</summary>
     public IEnumerable<FObj> BlockLevelChildren =>
         ChildObjects.Where(c => c is FoBlock or FoTable or FoListBlock or FoBlockContainer);
+
+    /// <summary>
+    /// The float's resolved inline-progression width in millipoints, for a side float, given the
+    /// <paramref name="availableMpt"/> content width: the float's own <c>width</c> if specified, else
+    /// the (first) child <c>fo:block-container</c>'s specified <c>width</c>, else half the available
+    /// width as a fallback. Clamped to the available width.
+    /// </summary>
+    public double ResolveSideFloatWidthMpt(double availableMpt)
+    {
+        double? specified = Width?.Millipoints;
+        if (specified is null)
+        {
+            foreach (FObj child in BlockLevelChildren)
+            {
+                if (child is FoBlockContainer { Width: { } w })
+                {
+                    specified = w.Millipoints;
+                    break;
+                }
+            }
+        }
+
+        double width = specified ?? availableMpt / 2.0;
+        return Math.Clamp(width, 0, availableMpt);
+    }
 }
 
 /// <summary>An external image, <c>fo:external-graphic</c>.</summary>
