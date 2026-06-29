@@ -110,6 +110,7 @@ internal static class BoxPropertyResolver
         ApplyPaddingLonghand(properties, "padding-end", Edge.Right, padding);
 
         FopColor? background = ResolveBackground(properties.GetRaw("background-color"));
+        BackgroundImage? backgroundImage = ResolveBackgroundImage(properties);
 
         return new BoxProperties(
             new BorderEdge(width[(int)Edge.Top], color[(int)Edge.Top], style[(int)Edge.Top]),
@@ -120,7 +121,8 @@ internal static class BoxPropertyResolver
             padding[(int)Edge.Right],
             padding[(int)Edge.Bottom],
             padding[(int)Edge.Left],
-            background);
+            background,
+            backgroundImage);
 
         double FontSize() => properties.FontSizeMpt;
 
@@ -297,5 +299,147 @@ internal static class BoxPropertyResolver
         }
 
         return ColorUtil.ParseColorString(null, raw);
+    }
+
+    /// <summary>
+    /// Resolves <c>background-image</c> together with <c>background-repeat</c> and
+    /// <c>background-position-horizontal</c>/<c>-vertical</c> (or the <c>background-position</c>
+    /// shorthand) into a <see cref="BackgroundImage"/>, or <c>null</c> when no image is set
+    /// (<c>none</c>/unset). Mirrors FOP's <c>CommonBorderPaddingBackground</c>: an image of <c>none</c>
+    /// drops the repeat/position values.
+    /// </summary>
+    private static BackgroundImage? ResolveBackgroundImage(PropertyList properties)
+    {
+        string? uri = ParseUri(properties.GetRaw("background-image"));
+        if (uri is null)
+        {
+            return null;
+        }
+
+        BackgroundRepeat repeat = FoEnumParsing.ParseBackgroundRepeat(properties.GetRaw("background-repeat"));
+
+        double fontSize = properties.FontSizeMpt;
+        BackgroundPosition horizontal = ParseBackgroundPosition(
+            properties.GetRaw("background-position-horizontal") ?? PositionComponent(properties, horizontal: true),
+            fontSize, horizontal: true);
+        BackgroundPosition vertical = ParseBackgroundPosition(
+            properties.GetRaw("background-position-vertical") ?? PositionComponent(properties, horizontal: false),
+            fontSize, horizontal: false);
+
+        return new BackgroundImage(uri, repeat, horizontal, vertical);
+    }
+
+    /// <summary>
+    /// Extracts a usable image reference from a <c>background-image</c> value: <c>url("…")</c> (quotes
+    /// optional) yields its target, a <c>none</c>/empty value yields <c>null</c>, and any other non-empty
+    /// value is taken verbatim (a bare path).
+    /// </summary>
+    private static string? ParseUri(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return null;
+        }
+
+        string v = raw.Trim();
+        if (v.Equals("none", StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        if (v.StartsWith("url(", StringComparison.OrdinalIgnoreCase) && v.EndsWith(')'))
+        {
+            string inner = v[4..^1].Trim().Trim('\'', '"').Trim();
+            return inner.Length == 0 ? null : inner;
+        }
+
+        return v;
+    }
+
+    /// <summary>
+    /// Pulls the horizontal or vertical component out of a <c>background-position</c> shorthand. The
+    /// shorthand carries one or two tokens; a single token sets the horizontal position (vertical
+    /// defaults to <c>center</c> per CSS); two tokens are horizontal then vertical. Keyword tokens
+    /// (<c>top</c>/<c>bottom</c> vs <c>left</c>/<c>right</c>) are routed to their natural axis.
+    /// </summary>
+    private static string? PositionComponent(PropertyList properties, bool horizontal)
+    {
+        string? shorthand = properties.GetRaw("background-position");
+        if (string.IsNullOrWhiteSpace(shorthand))
+        {
+            return null;
+        }
+
+        string[] tokens = shorthand.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+        if (tokens.Length == 0)
+        {
+            return null;
+        }
+
+        // Route axis-specific keywords regardless of order; otherwise first token is horizontal.
+        string? horiz = null;
+        string? vert = null;
+        var positional = new List<string>();
+        foreach (string token in tokens)
+        {
+            switch (token.Trim().ToLowerInvariant())
+            {
+                case "left" or "right": horiz = token; break;
+                case "top" or "bottom": vert = token; break;
+                default: positional.Add(token); break;
+            }
+        }
+
+        // Assign the non-keyword tokens to whichever axes are still unset, horizontal first.
+        foreach (string token in positional)
+        {
+            if (horiz is null)
+            {
+                horiz = token;
+            }
+            else if (vert is null)
+            {
+                vert = token;
+            }
+        }
+
+        return horizontal ? horiz : vert;
+    }
+
+    /// <summary>
+    /// Parses a <c>background-position-horizontal</c>/<c>-vertical</c> component: the
+    /// <c>left</c>/<c>center</c>/<c>right</c> (or <c>top</c>/<c>center</c>/<c>bottom</c>) keywords map to
+    /// 0%/50%/100%, a percentage is kept as a fraction, and any other length resolves to an absolute
+    /// offset. An unset value defaults to <c>0pt</c> (the start edge).
+    /// </summary>
+    private static BackgroundPosition ParseBackgroundPosition(string? raw, double fontSizeMpt, bool horizontal)
+    {
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return BackgroundPosition.Zero;
+        }
+
+        string v = raw.Trim().ToLowerInvariant();
+        switch (v)
+        {
+            case "left" when horizontal:
+            case "top" when !horizontal:
+                return BackgroundPosition.FromPercent(0);
+            case "center":
+                return BackgroundPosition.FromPercent(0.5);
+            case "right" when horizontal:
+            case "bottom" when !horizontal:
+                return BackgroundPosition.FromPercent(1.0);
+        }
+
+        if (v.EndsWith('%')
+            && double.TryParse(v[..^1], System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture, out double percent))
+        {
+            return BackgroundPosition.FromPercent(percent / 100.0);
+        }
+
+        FoLength? length = FoLength.TryParse(raw, fontSizeMpt);
+        return length is not null ? BackgroundPosition.FromLength(length.Value.Millipoints) : BackgroundPosition.Zero;
     }
 }

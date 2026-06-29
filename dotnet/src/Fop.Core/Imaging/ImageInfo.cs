@@ -56,6 +56,44 @@ public readonly record struct ImageDimensions(
         return FromImageInfo(info);
     }
 
+    /// <summary>
+    /// Reads the dimensions and resolution of an image from a file path or raw bytes (exactly one
+    /// non-null) synchronously, without decoding all pixels. Returns <c>null</c> when the image cannot
+    /// be identified (missing file, unsupported codec). Does not throw.
+    /// </summary>
+    public static ImageDimensions? TryRead(string? path, byte[]? bytes)
+    {
+        try
+        {
+            if (bytes is { Length: > 0 })
+            {
+                return FromImageInfo(Image.Identify(bytes));
+            }
+
+            if (!string.IsNullOrEmpty(path) && File.Exists(path))
+            {
+                return FromImageInfo(Image.Identify(path));
+            }
+        }
+        catch (Exception)
+        {
+            // Best-effort: an unidentifiable image yields null.
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// The intrinsic width in millipoints given the resolution (defaulting to <paramref name="defaultDpi"/>
+    /// when unknown): <c>pixels × 72 / dpi × 1000</c>.
+    /// </summary>
+    public double WidthMpt(double defaultDpi = 72.0)
+        => Width * 72.0 / (HorizontalResolution > 0 ? HorizontalResolution : defaultDpi) * 1000.0;
+
+    /// <summary>The intrinsic height in millipoints given the resolution (see <see cref="WidthMpt"/>).</summary>
+    public double HeightMpt(double defaultDpi = 72.0)
+        => Height * 72.0 / (VerticalResolution > 0 ? VerticalResolution : defaultDpi) * 1000.0;
+
     private static ImageDimensions FromImageInfo(ImageInfo info)
     {
         var meta = info.Metadata;

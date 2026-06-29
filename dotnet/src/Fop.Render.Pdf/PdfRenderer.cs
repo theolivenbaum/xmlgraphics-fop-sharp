@@ -27,6 +27,7 @@ namespace Fop.Render.Pdf;
 public sealed class PdfRenderer
 {
     private const double MptPerPoint = 1000.0;
+    private const double DefaultDpi = 72.0;
 
     private readonly PdfSharpFontMeasurer measurer;
 
@@ -58,6 +59,11 @@ public sealed class PdfRenderer
             using XGraphics gfx = XGraphics.FromPdfPage(page);
 
             DrawRects(gfx, pageArea.RectFills);
+
+            foreach (BackgroundImageArea background in pageArea.BackgroundImages)
+            {
+                DrawBackgroundImage(gfx, background);
+            }
 
             foreach (ImageRun image in pageArea.Images)
             {
@@ -392,6 +398,11 @@ public sealed class PdfRenderer
             }
 
             DrawRects(gfx, group.RectFills);
+            foreach (BackgroundImageArea background in group.BackgroundImages)
+            {
+                DrawBackgroundImage(gfx, background);
+            }
+
             foreach (ImageRun image in group.Images)
             {
                 DrawImage(gfx, image);
@@ -487,6 +498,91 @@ public sealed class PdfRenderer
         catch (Exception)
         {
             // Fall through to the placeholder. Image loading is best-effort.
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Paints a tiled <see cref="BackgroundImageArea"/>: the image is loaded, its intrinsic size derived
+    /// from its pixel dimensions and resolution, and it is tiled across the padding rectangle (clipped to
+    /// it) according to the repeat mode. A non-tiling axis is offset by the resolved background-position.
+    /// Mirrors FOP's <c>AbstractPathOrientedRenderer.drawBackground</c>. An undecodable image is skipped
+    /// (the background colour, if any, already painted underneath).
+    /// </summary>
+    private static void DrawBackgroundImage(XGraphics gfx, BackgroundImageArea background)
+    {
+        if (background.WidthMpt <= 0 || background.HeightMpt <= 0)
+        {
+            return;
+        }
+
+        XImage? loaded = TryLoadImageSource(background.SourcePath, background.SourceBytes);
+        if (loaded is null)
+        {
+            return;
+        }
+
+        using (loaded)
+        {
+            double dpiX = loaded.HorizontalResolution > 0 ? loaded.HorizontalResolution : DefaultDpi;
+            double dpiY = loaded.VerticalResolution > 0 ? loaded.VerticalResolution : DefaultDpi;
+            double tileWMpt = loaded.PixelWidth * 72.0 / dpiX * MptPerPoint;
+            double tileHMpt = loaded.PixelHeight * 72.0 / dpiY * MptPerPoint;
+            if (tileWMpt <= 0 || tileHMpt <= 0)
+            {
+                return;
+            }
+
+            BackgroundTiling tiling = BackgroundTiling.Compute(
+                background.WidthMpt, background.HeightMpt, tileWMpt, tileHMpt, background.Repeat,
+                background.PositionHorizontal, background.PositionVertical);
+
+            double clipX = background.XMpt / MptPerPoint;
+            double clipY = background.YMpt / MptPerPoint;
+            double clipW = background.WidthMpt / MptPerPoint;
+            double clipH = background.HeightMpt / MptPerPoint;
+            double tileW = tileWMpt / MptPerPoint;
+            double tileH = tileHMpt / MptPerPoint;
+            double startX = clipX + tiling.OffsetXMpt / MptPerPoint;
+            double startY = clipY + tiling.OffsetYMpt / MptPerPoint;
+
+            XGraphicsState state = gfx.Save();
+            try
+            {
+                gfx.IntersectClip(new XRect(clipX, clipY, clipW, clipH));
+                for (int ix = 0; ix < tiling.HorizontalCount; ix++)
+                {
+                    for (int iy = 0; iy < tiling.VerticalCount; iy++)
+                    {
+                        gfx.DrawImage(loaded, startX + ix * tileW, startY + iy * tileH, tileW, tileH);
+                    }
+                }
+            }
+            finally
+            {
+                gfx.Restore(state);
+            }
+        }
+    }
+
+    private static XImage? TryLoadImageSource(string? path, byte[]? bytes)
+    {
+        try
+        {
+            if (bytes is { Length: > 0 } b)
+            {
+                return XImage.FromStream(new MemoryStream(b, writable: false));
+            }
+
+            if (!string.IsNullOrEmpty(path) && File.Exists(path))
+            {
+                return XImage.FromFile(path);
+            }
+        }
+        catch (Exception)
+        {
+            // Best-effort: an undecodable background image is silently skipped.
         }
 
         return null;

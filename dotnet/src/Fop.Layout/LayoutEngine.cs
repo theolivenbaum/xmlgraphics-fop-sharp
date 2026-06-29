@@ -1129,6 +1129,8 @@ public sealed class LayoutEngine
 
         void Add(RectFill rect);
 
+        void Add(BackgroundImageArea background);
+
         void Add(ImageRun image);
 
         void Add(VectorPath vector);
@@ -1143,6 +1145,8 @@ public sealed class LayoutEngine
 
         public void Add(RectFill rect) => page.Add(rect);
 
+        public void Add(BackgroundImageArea background) => page.Add(background);
+
         public void Add(ImageRun image) => page.Add(image);
 
         public void Add(VectorPath vector) => page.Add(vector);
@@ -1156,6 +1160,8 @@ public sealed class LayoutEngine
         public void Add(TextRun run) => group.Add(run);
 
         public void Add(RectFill rect) => group.Add(rect);
+
+        public void Add(BackgroundImageArea background) => group.Add(background);
 
         public void Add(ImageRun image) => group.Add(image);
 
@@ -1172,6 +1178,7 @@ public sealed class LayoutEngine
     private sealed class BufferedSink : IPrimitiveSink
     {
         private readonly List<RectFill> rects = new();
+        private readonly List<BackgroundImageArea> backgrounds = new();
         private readonly List<TextRun> runs = new();
         private readonly List<ImageRun> images = new();
         private readonly List<VectorPath> vectors = new();
@@ -1180,6 +1187,8 @@ public sealed class LayoutEngine
         public void Add(TextRun run) => runs.Add(run);
 
         public void Add(RectFill rect) => rects.Add(rect);
+
+        public void Add(BackgroundImageArea background) => backgrounds.Add(background);
 
         public void Add(ImageRun image) => images.Add(image);
 
@@ -1219,6 +1228,27 @@ public sealed class LayoutEngine
                 {
                     head.rects.Add(r with { HeightMpt = cut - top });
                     tail.rects.Add(r with { YMpt = 0, HeightMpt = bottom - cut });
+                }
+            }
+
+            foreach (BackgroundImageArea bg in backgrounds)
+            {
+                double top = bg.YMpt;
+                double bottom = bg.YMpt + bg.HeightMpt;
+                if (bottom <= cut)
+                {
+                    head.backgrounds.Add(bg);
+                }
+                else if (top >= cut)
+                {
+                    tail.backgrounds.Add(bg with { YMpt = top - cut });
+                }
+                else
+                {
+                    // Clip the padding rectangle at the cut. Tiling phase restarts on the tail slice (a
+                    // minor artifact for the rare background image split across a page break).
+                    head.backgrounds.Add(bg with { HeightMpt = cut - top });
+                    tail.backgrounds.Add(bg with { YMpt = 0, HeightMpt = bottom - cut });
                 }
             }
 
@@ -1299,6 +1329,11 @@ public sealed class LayoutEngine
                 target.Add(r with { XMpt = r.XMpt + dx, YMpt = r.YMpt + dy });
             }
 
+            foreach (BackgroundImageArea bg in backgrounds)
+            {
+                target.Add(bg with { XMpt = bg.XMpt + dx, YMpt = bg.YMpt + dy });
+            }
+
             foreach (ImageRun img in images)
             {
                 target.Add(img with { XMpt = img.XMpt + dx, YMpt = img.YMpt + dy });
@@ -1373,6 +1408,26 @@ public sealed class LayoutEngine
 
         double rightMpt = leftMpt + widthMpt;
         double bottomMpt = topMpt + heightMpt;
+
+        // A background image fills the padding rectangle (inside any visible borders) and is clipped to
+        // it by the renderer, so it never overlaps the border edges painted below. Mirrors FOP's
+        // drawBackground, which insets by the border widths before tiling.
+        if (box.BackgroundImage is BackgroundImage backgroundImage)
+        {
+            double padLeft = leftMpt + (box.BorderLeft.IsVisible ? box.BorderLeft.Width.Millipoints : 0);
+            double padRight = rightMpt - (box.BorderRight.IsVisible ? box.BorderRight.Width.Millipoints : 0);
+            double padTop = topMpt + (paintTop && box.BorderTop.IsVisible ? box.BorderTop.Width.Millipoints : 0);
+            double padBottom = bottomMpt - (paintBottom && box.BorderBottom.IsVisible
+                ? box.BorderBottom.Width.Millipoints : 0);
+            double padWidth = padRight - padLeft;
+            double padHeight = padBottom - padTop;
+            if (padWidth > 0 && padHeight > 0)
+            {
+                target.Add(new BackgroundImageArea(padLeft, padTop, padWidth, padHeight,
+                    backgroundImage.Uri, SourceBytes: null, backgroundImage.Repeat,
+                    backgroundImage.PositionHorizontal, backgroundImage.PositionVertical));
+            }
+        }
 
         if (paintTop && box.BorderTop.IsVisible)
         {

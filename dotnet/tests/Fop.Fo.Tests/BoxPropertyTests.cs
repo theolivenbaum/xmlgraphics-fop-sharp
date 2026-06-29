@@ -218,4 +218,100 @@ public class BoxPropertyTests
         Assert.Null(graphic.ContentWidth);
         Assert.Null(graphic.ContentHeight);
     }
+
+    [Fact]
+    public void BackgroundImage_UrlResolvesWithDefaults()
+    {
+        FoBlock block = FirstBlock("<fo:block background-image=\"url('bg.png')\">x</fo:block>");
+        BoxProperties box = block.Box;
+        Assert.True(box.HasBackgroundImage);
+        Assert.True(box.HasBackground);
+        BackgroundImage bg = box.BackgroundImage!;
+        Assert.Equal("bg.png", bg.Uri);
+        Assert.Equal(BackgroundRepeat.Repeat, bg.Repeat);     // default
+        Assert.Equal(BackgroundPosition.Zero, bg.PositionHorizontal);
+        Assert.Equal(BackgroundPosition.Zero, bg.PositionVertical);
+    }
+
+    [Fact]
+    public void BackgroundImage_NoneIsNull()
+    {
+        FoBlock block = FirstBlock("<fo:block background-image=\"none\">x</fo:block>");
+        Assert.False(block.Box.HasBackgroundImage);
+        Assert.False(block.Box.HasBackground);
+    }
+
+    [Fact]
+    public void BackgroundImage_BareReferenceAccepted()
+    {
+        FoBlock block = FirstBlock("<fo:block background-image=\"tile.gif\">x</fo:block>");
+        Assert.Equal("tile.gif", block.Box.BackgroundImage!.Uri);
+    }
+
+    [Fact]
+    public void BackgroundRepeat_Parsed()
+    {
+        FoBlock block = FirstBlock(
+            "<fo:block background-image=\"url(b.png)\" background-repeat=\"no-repeat\">x</fo:block>");
+        Assert.Equal(BackgroundRepeat.NoRepeat, block.Box.BackgroundImage!.Repeat);
+    }
+
+    [Fact]
+    public void BackgroundPosition_KeywordsMapToPercent()
+    {
+        FoBlock block = FirstBlock(
+            "<fo:block background-image=\"url(b.png)\" background-position-horizontal=\"right\" "
+            + "background-position-vertical=\"center\">x</fo:block>");
+        BackgroundImage bg = block.Box.BackgroundImage!;
+        Assert.True(bg.PositionHorizontal.IsPercent);
+        Assert.Equal(1.0, bg.PositionHorizontal.Percent, 6);
+        Assert.True(bg.PositionVertical.IsPercent);
+        Assert.Equal(0.5, bg.PositionVertical.Percent, 6);
+    }
+
+    [Fact]
+    public void BackgroundPosition_LengthAndPercent()
+    {
+        FoBlock block = FirstBlock(
+            "<fo:block background-image=\"url(b.png)\" background-position-horizontal=\"10pt\" "
+            + "background-position-vertical=\"25%\">x</fo:block>");
+        BackgroundImage bg = block.Box.BackgroundImage!;
+        Assert.False(bg.PositionHorizontal.IsPercent);
+        Assert.Equal(10_000, bg.PositionHorizontal.LengthMpt, 3);
+        Assert.True(bg.PositionVertical.IsPercent);
+        Assert.Equal(0.25, bg.PositionVertical.Percent, 6);
+    }
+
+    [Fact]
+    public void BackgroundPositionShorthand_SplitsAcrossAxes()
+    {
+        FoBlock block = FirstBlock(
+            "<fo:block background-image=\"url(b.png)\" background-position=\"right top\">x</fo:block>");
+        BackgroundImage bg = block.Box.BackgroundImage!;
+        Assert.Equal(1.0, bg.PositionHorizontal.Percent, 6);   // right
+        Assert.Equal(0.0, bg.PositionVertical.Percent, 6);     // top
+    }
+
+    [Fact]
+    public void BackgroundShorthand_ExpandsImageRepeatPosition()
+    {
+        FoBlock block = FirstBlock(
+            "<fo:block background=\"#eeeeee url('paper.png') no-repeat center\">x</fo:block>");
+        BoxProperties box = block.Box;
+        Assert.NotNull(box.BackgroundColor);
+        Assert.Equal(0xEE, box.BackgroundColor!.Red);
+        BackgroundImage bg = box.BackgroundImage!;
+        Assert.Equal("paper.png", bg.Uri);
+        Assert.Equal(BackgroundRepeat.NoRepeat, bg.Repeat);
+        Assert.Equal(0.5, bg.PositionHorizontal.Percent, 6);   // center -> horizontal
+    }
+
+    [Fact]
+    public void BackgroundImage_NotInherited()
+    {
+        FoBlock parent = FirstBlock(
+            "<fo:block background-image=\"url(b.png)\"><fo:block>child</fo:block></fo:block>");
+        FoBlock child = parent.ChildObjects.OfType<FoBlock>().Single();
+        Assert.False(child.Box.HasBackgroundImage);
+    }
 }
