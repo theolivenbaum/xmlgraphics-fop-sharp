@@ -77,12 +77,21 @@ package, as a rough size signal.
       `round`/`ceiling`/`floor`, `rgb`/`system-color`), gated into `PropertyList`.
 - [~] Full property subsystem (the remaining ~290 properties, shorthands, refinement) — a curated
       subset is resolved in `PropertyList`, backed by the expression evaluator and a **shorthand
-      expansion layer** (`PropertyShorthands`): `margin`, `size`, `font`, `background`,
-      `page-break-before/after/inside` and `white-space` expand to their longhands, with the cascade
-      longhand-on-element &gt; shorthand-on-element &gt; inherited. (border/padding shorthands are
-      handled by `BoxPropertyResolver`.) Remaining: the full ~290-property maker set, corresponding
-      writing-mode-relative property mapping, and validation.
-- [ ] Remaining flow/pagination/table FOs; `FOEventHandler`, validation.
+      expansion layer** (`PropertyShorthands`): `margin`, `size`, `font`, `background` (now also
+      `background-image`/`-repeat`/`-position`), `page-break-before/after/inside` and `white-space`
+      expand to their longhands, with the cascade longhand-on-element &gt; shorthand-on-element &gt;
+      inherited. (border/padding shorthands are handled by `BoxPropertyResolver`.) A
+      **`PropertyCatalog`** now transcribes FOP's `FOPropertyMapping` (~280 properties) with each
+      property's inheritance flag, datatype family, enumerated value set and initial value;
+      `PropertyList` resolves inheritance from the catalogue's authoritative 85-property inherited set
+      (excluding `start`/`end-indent` and `keep-*`, which this engine applies positionally), and a
+      **`PropertyValidator`** flags unknown property names and values violating their datatype
+      (out-of-set enum keyword, malformed length/number/colour), leniently accepting `inherit` and
+      property expressions (`ValidateTree` walks a whole document). Remaining: writing-mode-relative
+      property mapping, full refinement, and surfacing validation through the event pipeline.
+- [x] **`fo:character`** — a new inline FO contributing its single `character` as one styled word
+      (own font/colour/decoration). Word-atom model limitation: it is a standalone inline word.
+- [ ] Remaining flow/pagination/table FOs; `FOEventHandler`.
 
 ## Phase 5 — Area tree & layout  `[~]`  (~46,000 LOC)
 
@@ -93,6 +102,17 @@ package, as a rough size signal.
       widths, row heights, per-cell box model, column spanning, **row spanning**, row-level
       pagination with best-effort header repetition.
 - [x] Box model (borders/padding/backgrounds), painted **across page breaks**, + `fo:external-graphic`.
+- [x] **`background-image`** — `background-image`/`background-repeat`/`background-position-horizontal`/
+      `-vertical` (and the `background-position`/`background` shorthands) resolve into a `BackgroundImage`
+      on `BoxProperties`. The layout engine emits a `BackgroundImageArea` over the box's **padding
+      rectangle**; both PDF renderers (PdfSharp + native) load the image, clip to the padding rect and
+      **tile** it per the repeat mode, offsetting a non-tiling axis by the resolved position
+      (percentages against the free space). Shared tiling arithmetic in `BackgroundTiling`; mirrors
+      FOP's `AbstractPathOrientedRenderer.drawBackground`.
+- [x] **`border-collapse`** — the collapsing border model (`border-collapse="collapse"`): adjacent
+      cells share a single interior border instead of doubling. Each cell paints its before/start
+      (top/left) edges always and its after/end (bottom/right) edges only on the table's outer rows/
+      columns. The separate (default) model is unchanged; width/style conflict resolution is not modelled.
 - [x] **Lists** (`fo:list-block`/item/label/body) with provisional label/body geometry and nesting.
 - [x] **Static content / regions**: `fo:region-before`/`after` bands + `fo:static-content` running
       headers/footers + `fo:page-number`.
