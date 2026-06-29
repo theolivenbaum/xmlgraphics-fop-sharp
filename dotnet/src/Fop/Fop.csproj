@@ -7,7 +7,7 @@
     Fop.Layout, Fop.Render.Pdf, ...) so the port can proceed bottom-up. Those
     components are NOT published individually: instead this project references
     the two top-level renderers (which transitively pull in every other
-    component) and packs ALL of their assemblies into one `Fop` package.
+    component) and packs ALL of their assemblies into one `FOP.Sharp` package.
 
     How the bundling works:
       * Each ProjectReference uses PrivateAssets="all" so NuGet does NOT emit a
@@ -23,7 +23,7 @@
   <PropertyGroup>
     <RootNamespace>Fop</RootNamespace>
     <IsPackable>true</IsPackable>
-    <PackageId>Fop</PackageId>
+    <PackageId>FOP.Sharp</PackageId>
     <Title>Apache FOP for .NET</Title>
     <Description>A modern, cross-platform C# port of Apache FOP (Formatting Objects Processor): read an XSL-FO document and render it to PDF, plain text, Markdown or HTML. This single package bundles the whole engine (FO tree, layout, area tree, PdfSharp and native PDF renderers, text renderers, fonts, SVG and hyphenation). Use the FopProcessor facade (FO in, PDF out).</Description>
     <PackageReadmeFile>README.md</PackageReadmeFile>
@@ -50,6 +50,8 @@
       Hyphenation/Svg/Fo/Core/Layout/Render.Pdf.Native). PrivateAssets="all"
       keeps them out of the package's dependency list; their DLLs are bundled
       by IncludeReferencedAssembliesInPackage below.
+      (The component DLLs keep their Fop.* assembly names; only the published
+      NuGet package id is FOP.Sharp.)
     -->
     <ProjectReference Include="..\Fop.Render.Pdf\Fop.Render.Pdf.csproj" PrivateAssets="all" />
     <ProjectReference Include="..\Fop.Render.Text\Fop.Render.Text.csproj" PrivateAssets="all" />

@@ -20,13 +20,13 @@ packages**:
 
 | Package | Kind | Description |
 |---------|------|-------------|
-| [`Fop`](https://www.nuget.org/packages/Fop) | Library | The full engine in a single package. Reference it and use the `FopProcessor` facade (FO in → PDF out) or the text renderers. |
-| [`Fop.Cli`](https://www.nuget.org/packages/Fop.Cli) | .NET tool | The `fop` command-line tool. Install globally, then run `fop in.fo out.pdf`. |
+| [`FOP.Sharp`](https://www.nuget.org/packages/FOP.Sharp) | Library | The full engine in a single package. Reference it and use the `FopProcessor` facade (FO in → PDF out) or the text renderers. |
+| [`FOP.Sharp.Cli`](https://www.nuget.org/packages/FOP.Sharp.Cli) | .NET tool | The `fop` command-line tool. Install globally, then run `fop in.fo out.pdf`. |
 
-### What's inside the `Fop` package
+### What's inside the `FOP.Sharp` package
 
-The `Fop` library package is self-contained: it **bundles every component assembly** of the
-port (you only ever reference `Fop`). The bundled assemblies are:
+The `FOP.Sharp` library package is self-contained: it **bundles every component assembly** of the
+port (you only ever reference `FOP.Sharp`). The bundled assemblies are:
 
 | Assembly | Responsibility |
 |----------|----------------|
@@ -54,10 +54,10 @@ Its third-party NuGet dependencies (`PdfSharp`, `SixLabors.ImageSharp`, `SixLabo
 
 ```bash
 # Library
-dotnet add package Fop
+dotnet add package FOP.Sharp
 
 # Command-line tool (global)
-dotnet tool install --global Fop.Cli
+dotnet tool install --global FOP.Sharp.Cli
 ```
 
 ## Usage
