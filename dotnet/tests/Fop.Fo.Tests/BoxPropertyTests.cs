@@ -314,4 +314,28 @@ public class BoxPropertyTests
         FoBlock child = parent.ChildObjects.OfType<FoBlock>().Single();
         Assert.False(child.Box.HasBackgroundImage);
     }
+
+    [Fact]
+    public void Character_ParsesSingleCharacter()
+    {
+        FoBlock block = FirstBlock("<fo:block><fo:character character=\"x\"/></fo:block>");
+        FoCharacter c = block.ChildObjects.OfType<FoCharacter>().Single();
+        Assert.Equal("x", c.Character);
+    }
+
+    [Fact]
+    public void Character_EntityReferenceResolvedToLiteral()
+    {
+        // A numeric character reference is resolved by the XML parser before it reaches the property.
+        FoBlock block = FirstBlock("<fo:block><fo:character character=\"&#x2022;\"/></fo:block>");
+        FoCharacter c = block.ChildObjects.OfType<FoCharacter>().Single();
+        Assert.Equal("\u2022", c.Character); // U+2022 BULLET
+    }
+
+    [Fact]
+    public void Character_UnsetIsEmpty()
+    {
+        FoBlock block = FirstBlock("<fo:block><fo:character/></fo:block>");
+        Assert.Equal(string.Empty, block.ChildObjects.OfType<FoCharacter>().Single().Character);
+    }
 }
