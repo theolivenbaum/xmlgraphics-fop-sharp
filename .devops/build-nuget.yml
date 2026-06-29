@@ -70,7 +70,9 @@ steps:
 - task: NuGetCommand@2
   inputs:
     command: 'push'
-    packagesToPush: '**/*.nupkg'
+    # The pack task above writes packages to $(Build.ArtifactStagingDirectory)
+    # (its default packDirectory), so search there rather than the working dir.
+    packagesToPush: '$(Build.ArtifactStagingDirectory)/**/*.nupkg'
     nuGetFeedType: 'external'
     publishFeedCredentials: 'nuget-curiosity-org'
   displayName: 'push nuget'
