@@ -4,12 +4,21 @@
     <OutputType>Exe</OutputType>
     <RootNamespace>Fop.Cli</RootNamespace>
     <AssemblyName>fop</AssemblyName>
-    <Description>Command-line front-end for the FOP C# port: render an XSL-FO document to PDF (a port of org.apache.fop.cli).</Description>
+    <Description>Command-line front-end for the FOP C# port: render an XSL-FO document to PDF, plain text, Markdown or HTML (a port of org.apache.fop.cli). Install as a global .NET tool, then run `fop in.fo out.pdf`.</Description>
     <!-- Packable as a global .NET tool: `dotnet tool install` then `fop in.fo out.pdf`. -->
+    <IsPackable>true</IsPackable>
     <PackAsTool>true</PackAsTool>
     <ToolCommandName>fop</ToolCommandName>
+    <PackageId>Fop.Cli</PackageId>
+    <Title>Apache FOP for .NET — command-line tool</Title>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
     <InvariantGlobalization>true</InvariantGlobalization>
   </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Ship the C# library README at the package root. -->
+    <None Include="..\..\..\README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\Fop.Render.Pdf\Fop.Render.Pdf.csproj" />

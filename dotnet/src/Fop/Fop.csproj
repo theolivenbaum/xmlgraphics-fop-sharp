@@ -1,0 +1,90 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    The single, published NuGet package for the C# port of Apache FOP.
+
+    The port is split into many small component projects (Fop.Util, Fop.Fo,
+    Fop.Layout, Fop.Render.Pdf, ...) so the port can proceed bottom-up. Those
+    components are NOT published individually: instead this project references
+    the two top-level renderers (which transitively pull in every other
+    component) and packs ALL of their assemblies into one `Fop` package.
+
+    How the bundling works:
+      * Each ProjectReference uses PrivateAssets="all" so NuGet does NOT emit a
+        package dependency on a (non-existent) Fop.* package.
+      * The IncludeReferencedAssembliesInPackage target below collects every
+        transitively-referenced project assembly (and its XML docs) and adds
+        them to lib/<tfm> in the package.
+      * The third-party libraries the components rely on (PdfSharp, SixLabors)
+        are declared here as normal PackageReferences so they flow through as
+        real NuGet dependencies of the Fop package.
+  -->
+
+  <PropertyGroup>
+    <RootNamespace>Fop</RootNamespace>
+    <IsPackable>true</IsPackable>
+    <PackageId>Fop</PackageId>
+    <Title>Apache FOP for .NET</Title>
+    <Description>A modern, cross-platform C# port of Apache FOP (Formatting Objects Processor): read an XSL-FO document and render it to PDF, plain text, Markdown or HTML. This single package bundles the whole engine (FO tree, layout, area tree, PdfSharp and native PDF renderers, text renderers, fonts, SVG and hyphenation). Use the FopProcessor facade (FO in, PDF out).</Description>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+
+    <!-- PdfSharp currently only ships a prerelease; depending on it is intentional. -->
+    <NoWarn>$(NoWarn);NU5104</NoWarn>
+
+    <!--
+      Embed every referenced component assembly in this package's build output
+      instead of declaring them as package dependencies.
+    -->
+    <TargetsForTfmSpecificBuildOutput>$(TargetsForTfmSpecificBuildOutput);IncludeReferencedAssembliesInPackage</TargetsForTfmSpecificBuildOutput>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Ship the C# library README at the package root. -->
+    <None Include="..\..\..\README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      The two top-level renderers transitively reference every other component
+      project (Fop.Util/Events/DataTypes/Traits/Colors/Fonts/Configuration/Pdf/
+      Hyphenation/Svg/Fo/Core/Layout/Render.Pdf.Native). PrivateAssets="all"
+      keeps them out of the package's dependency list; their DLLs are bundled
+      by IncludeReferencedAssembliesInPackage below.
+    -->
+    <ProjectReference Include="..\Fop.Render.Pdf\Fop.Render.Pdf.csproj" PrivateAssets="all" />
+    <ProjectReference Include="..\Fop.Render.Text\Fop.Render.Text.csproj" PrivateAssets="all" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      Third-party runtime dependencies of the bundled components. These are
+      declared directly so they become real NuGet dependencies of the Fop
+      package (the PrivateAssets="all" project references above would otherwise
+      suppress them). Keep the versions in sync with the component projects:
+        PdfSharp                       -> Fop.Render.Pdf
+        SixLabors.ImageSharp / Fonts   -> Fop.Core
+    -->
+    <PackageReference Include="PdfSharp" Version="7.0.0-preview-1" />
+    <PackageReference Include="SixLabors.ImageSharp" Version="3.1.11" />
+    <PackageReference Include="SixLabors.Fonts" Version="2.1.3" />
+    <PackageReference Include="SixLabors.ImageSharp.Drawing" Version="2.1.7" />
+  </ItemGroup>
+
+  <!--
+    Collect every transitively-referenced project assembly (DLL + XML docs) and
+    add it to the package's lib/<tfm> folder. ReferenceCopyLocalPaths with
+    ReferenceSourceTarget == 'ProjectReference' is exactly the set of component
+    assemblies that are copied next to this project's output.
+  -->
+  <Target Name="IncludeReferencedAssembliesInPackage" DependsOnTargets="ResolveReferences">
+    <ItemGroup>
+      <_FopComponentAssembly Include="@(ReferenceCopyLocalPaths->WithMetadataValue('ReferenceSourceTarget', 'ProjectReference'))"
+                             Condition="'%(Extension)' == '.dll'" />
+      <BuildOutputInPackage Include="@(_FopComponentAssembly)" />
+      <!-- Ship each component's XML docs alongside its assembly so IntelliSense works. -->
+      <BuildOutputInPackage Include="@(_FopComponentAssembly->'%(RootDir)%(Directory)%(Filename).xml')"
+                            Condition="Exists('%(RootDir)%(Directory)%(Filename).xml')" />
+    </ItemGroup>
+  </Target>
+
+</Project>

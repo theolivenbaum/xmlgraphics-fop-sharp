@@ -1,5 +1,6 @@
 <Solution>
   <Folder Name="/src/">
+    <Project Path="src/Fop/Fop.csproj" />
     <Project Path="src/Fop.Cli/Fop.Cli.csproj" />
     <Project Path="src/Fop.Colors/Fop.Colors.csproj" />
     <Project Path="src/Fop.Configuration/Fop.Configuration.csproj" />
