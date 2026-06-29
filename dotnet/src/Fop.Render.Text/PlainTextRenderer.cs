@@ -37,9 +37,16 @@ public sealed class PlainTextRenderer
     {
         ArgumentNullException.ThrowIfNull(foInput);
         ArgumentNullException.ThrowIfNull(output);
-        string text = Render(FoTreeBuilder.Parse(foInput));
+        Render(FoTreeBuilder.Parse(foInput), output);
+    }
+
+    /// <summary>Renders an already-parsed FO tree to plain text, written (UTF-8) to <paramref name="output"/>.</summary>
+    public void Render(FoRoot root, Stream output)
+    {
+        ArgumentNullException.ThrowIfNull(root);
+        ArgumentNullException.ThrowIfNull(output);
         using var writer = new StreamWriter(output, new UTF8Encoding(false), leaveOpen: true);
-        writer.Write(text);
+        writer.Write(Render(root));
     }
 
     /// <summary>Renders an already-parsed FO tree to plain text.</summary>

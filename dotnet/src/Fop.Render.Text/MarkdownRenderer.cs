@@ -37,9 +37,16 @@ public sealed class MarkdownRenderer
     {
         ArgumentNullException.ThrowIfNull(foInput);
         ArgumentNullException.ThrowIfNull(output);
-        string md = Render(FoTreeBuilder.Parse(foInput));
+        Render(FoTreeBuilder.Parse(foInput), output);
+    }
+
+    /// <summary>Renders an already-parsed FO tree to Markdown, written (UTF-8) to <paramref name="output"/>.</summary>
+    public void Render(FoRoot root, Stream output)
+    {
+        ArgumentNullException.ThrowIfNull(root);
+        ArgumentNullException.ThrowIfNull(output);
         using var writer = new StreamWriter(output, new UTF8Encoding(false), leaveOpen: true);
-        writer.Write(md);
+        writer.Write(Render(root));
     }
 
     /// <summary>Renders an already-parsed FO tree to Markdown.</summary>

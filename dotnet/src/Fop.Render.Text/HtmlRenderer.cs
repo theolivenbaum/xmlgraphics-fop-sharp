@@ -38,9 +38,16 @@ public sealed class HtmlRenderer
     {
         ArgumentNullException.ThrowIfNull(foInput);
         ArgumentNullException.ThrowIfNull(output);
-        string html = Render(FoTreeBuilder.Parse(foInput));
+        Render(FoTreeBuilder.Parse(foInput), output);
+    }
+
+    /// <summary>Renders an already-parsed FO tree to HTML, written (UTF-8) to <paramref name="output"/>.</summary>
+    public void Render(FoRoot root, Stream output)
+    {
+        ArgumentNullException.ThrowIfNull(root);
+        ArgumentNullException.ThrowIfNull(output);
         using var writer = new StreamWriter(output, new UTF8Encoding(false), leaveOpen: true);
-        writer.Write(html);
+        writer.Write(Render(root));
     }
 
     /// <summary>Renders an already-parsed FO tree to an HTML document.</summary>
