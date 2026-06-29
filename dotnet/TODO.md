@@ -75,8 +75,13 @@ package, as a rough size signal.
 - [x] `Fop.Fo.Expr` property-expression evaluator (arithmetic with `div`/`mod`, unit math,
       `from-parent`/`from-nearest-specified-value`/`inherited-property-value`, `max`/`min`/`abs`/
       `round`/`ceiling`/`floor`, `rgb`/`system-color`), gated into `PropertyList`.
-- [ ] Full property subsystem (the remaining ~290 properties, shorthands, refinement) — a curated
-      subset is resolved in `PropertyList`, now backed by the expression evaluator.
+- [~] Full property subsystem (the remaining ~290 properties, shorthands, refinement) — a curated
+      subset is resolved in `PropertyList`, backed by the expression evaluator and a **shorthand
+      expansion layer** (`PropertyShorthands`): `margin`, `size`, `font`, `background`,
+      `page-break-before/after/inside` and `white-space` expand to their longhands, with the cascade
+      longhand-on-element &gt; shorthand-on-element &gt; inherited. (border/padding shorthands are
+      handled by `BoxPropertyResolver`.) Remaining: the full ~290-property maker set, corresponding
+      writing-mode-relative property mapping, and validation.
 - [ ] Remaining flow/pagination/table FOs; `FOEventHandler`, validation.
 
 ## Phase 5 — Area tree & layout  `[~]`  (~46,000 LOC)
@@ -104,10 +109,42 @@ package, as a rough size signal.
 - [x] **`fo:block-container`** — absolute/fixed/auto positioning + `reference-orientation` rotation
       (transform group in the area tree, PdfSharp transforms in the renderer).
 - [x] **PDF bookmarks** (`fo:bookmark-tree` → document outline).
-- [ ] Total-fit *page* breaking, floats, intra-row splitting; rotated-group link annotations. (Residual TODOs: footnote reserve is greedy not
-      iterative; a row-spanning cell crossing a page break paints on its origin page only; ids inside
-      buffered contexts (cells/footnote bodies) aren't recorded for citations; citation-last uses the
-      single recorded page under the flat model.)
+- [x] **ids inside buffered contexts** (table cells, list items, footnote bodies) are recorded against
+      the page their buffer is placed on, so `fo:page-number-citation` to such content resolves
+      (previously rendered "?").
+- [x] **widows/orphans** control: a block split across a page break keeps at least `orphans` lines at
+      the bottom of the first page (pushing the whole block forward when too few fit) and at least
+      `widows` lines on the continuation page (pulling lines back), defaulting to 2/2.
+- [x] **rotated-group link annotations**: a `fo:basic-link` inside a rotated `fo:block-container`
+      surfaces as a page-space link annotation. Its rect is the axis-aligned bounding box of the four
+      group-local link corners mapped through the group's translate-then-clockwise-rotate transform
+      (PDF link rectangles cannot themselves rotate).
+- [x] **native renderer paints transformed groups**: rotated `fo:block-container`s now render in the
+      PdfSharp-free native renderer too, under a content-stream CTM (translate-then-clockwise-rotate),
+      with their links mapped to page-space annotations -- closing the gap with the PdfSharp path.
+- [x] **intra-row table splitting**: a table row taller than a whole content region splits across pages
+      at text-line boundaries instead of overflowing. Each slice paints its cell/row box (top border on
+      the first slice, bottom on the last, side borders/background on every slice) and the header repeats
+      on each continuation page. Scoped to rows with no row-spanning cell (those still paint at their
+      origin page); cuts fall between lines, with non-text content (images/vectors) assigned whole to the
+      slice its top falls in.
+- [x] **`fo:wrapper`** — the transparent grouping FO: inline content is flattened with the wrapper's
+      inherited style (font/colour/…); block-level children stack in the parent flow (the wrapper itself
+      generates no area). Nested wrappers expand recursively. Previously a block-level wrapper's content
+      was silently dropped.
+- [x] **`fo:float`** — `float="before"` is anchored at the region top (placed immediately when the
+      region is still empty, else deferred to the top of the next region, mirroring FOP). `start`/`end`
+      side floats are placed against the region edge and reserve a vertical band: following flow blocks
+      wrap into the remaining column (narrowed, and shifted for a start float) until the cursor clears
+      the float. `float="none"` lays out in the normal flow; in a buffered context (table cell, list
+      body) a float's content is laid out in place. Float width resolves from the float's own `width`,
+      else a child block-container's, else half the available width. Side-float residuals: a single
+      block that begins beside a float keeps the narrowed column for its whole height (no mid-block
+      reflow to full width below the float); side floats are page-local and clamped to the region bottom.
+- [ ] Total-fit *page* breaking. (Residual approximations: footnote reserve is greedy not iterative; a
+      row-spanning cell crossing a page break paints on its origin page only; a row that fits on a fresh
+      page but not the remaining space still moves whole rather than splitting; citation-last equals the
+      single recorded page under the flat area model.)
 
 ## Phase 6 — Renderers  `[ ]`  (~79,000 LOC)
 
@@ -118,12 +155,26 @@ Independent back-ends; port in priority order. Each can be its own project (`Fop
       - `Fop.Render.Pdf` renders the area tree to PDF via **PdfSharp** today (text, fonts, colour,
         rects) and exposes the `FopProcessor` facade — a working FO→PDF path.
       - `Fop.Pdf` is a from-scratch port of FOP's low-level PDF object model (PDFObject/Name/Number/
-        String/Array/Dictionary/Reference/Null + serialization); the longer-term goal is a native
-        renderer on `Fop.Pdf` (PDFDocument, page/resource/font/image objects, encryption, filters)
-        so PdfSharp can become optional.
-      - Still needed in the PdfSharp renderer: borders/backgrounds, images, links, leaders, bookmarks.
+        String/Array/Dictionary/Reference/Null + serialization).
+      - **`Fop.Render.Pdf.Native`** is a native, PdfSharp-free renderer built on that model: it writes
+        the file structure (objects/xref/trailer) directly and emits pages, text, vector graphics,
+        rules/backgrounds, link annotations and the document outline. It **embeds raster images**
+        (`Fop.Imaging.RasterImage`: JPEG pass-through as DCTDecode, other formats decoded to FlateDecode
+        RGB + an `/SMask` for alpha) and **embeds + subsets TrueType/OpenType fonts** as Type0 composite
+        fonts (Identity-H, CIDFontType2, `/ToUnicode`), so any Unicode the face covers renders -- not
+        just WinAnsi -- with the standard-14 fonts as a metric-compatible fallback; `TrueTypeSubsetter`
+        rebuilds `glyf`/`loca` keeping glyph ids so subsetting stays valid (a sample drops ~630 KB →
+        ~80 KB). Content streams are **FlateDecode-compressed**, and the document can be **encrypted**
+        (standard RC4-128 handler with owner/user passwords + permission flags via `PdfEncryptionOptions`).
+        Exposed via `FopProcessor.ConvertNative` and the CLI `-native` flag; PdfSharp's reader (and, for
+        fonts, SixLabors.Fonts, independently) re-open the output. Remaining: AES encryption,
+        object/xref streams, tagged/accessible PDF.
 - [ ] Bitmap/Java2D → **ImageSharp** raster renderer (`Fop.Render.Bitmap`).
-- [ ] PostScript, AFP, PCL, RTF, TXT, intermediate XML — subsequent.
+- [x] **Text-family back-ends** (`Fop.Render.Text`): plain text, Markdown and HTML, rendered from the
+      FO tree's logical structure (a shared `DocExtractor` → paragraphs/headings/lists/tables/links/
+      images model) rather than the positioned area tree. Wired into the CLI via the output extension
+      or the `-txt`/`-md`/`-html` flags.
+- [ ] PostScript, AFP, PCL, RTF, intermediate XML — subsequent.
 - [ ] Image loading pipeline (`Fop.Imaging`) — built on ImageSharp; `ImageDimensions` started.
 - [x] **SVG** (`fo:instream-foreign-object`) — `Fop.Svg` parses a static SVG subset (basic shapes,
       `path` with arc→Bezier, `g`/`transform`, presentation attrs + `style`, simple `text`) into

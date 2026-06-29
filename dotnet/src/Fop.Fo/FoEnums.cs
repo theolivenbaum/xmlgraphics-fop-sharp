@@ -53,6 +53,25 @@ public enum BreakKind
     OddPage,
 }
 
+/// <summary>
+/// The resolved kind of the <c>float</c> property on an <c>fo:float</c>: where the float's content is
+/// placed relative to the normal flow.
+/// </summary>
+public enum FloatKind
+{
+    /// <summary>Not floated; the content lays out in the normal flow (the <c>none</c> default).</summary>
+    None,
+
+    /// <summary>A before-float: the content is placed at the top of the region.</summary>
+    Before,
+
+    /// <summary>A side float to the start (left) edge. Not yet flowed around; treated as in-flow.</summary>
+    Start,
+
+    /// <summary>A side float to the end (right) edge. Not yet flowed around; treated as in-flow.</summary>
+    End,
+}
+
 /// <summary>The resolved <c>keep-together</c> strength, scoped to the within-page constraint.</summary>
 public enum KeepStrength
 {
@@ -186,6 +205,19 @@ public static class FoEnumParsing
         "even-page" => BreakKind.EvenPage,
         "odd-page" => BreakKind.OddPage,
         _ => BreakKind.Auto,
+    };
+
+    /// <summary>
+    /// Parses a <c>float</c> keyword into a <see cref="FloatKind"/>. <c>before</c> is a before-float;
+    /// <c>left</c>/<c>start</c> and <c>right</c>/<c>end</c> are side floats (mapped without bidi, so
+    /// <c>left</c>=<c>start</c>); anything else (incl. <c>none</c>/unset) is <see cref="FloatKind.None"/>.
+    /// </summary>
+    public static FloatKind ParseFloat(string? value) => value?.Trim().ToLowerInvariant() switch
+    {
+        "before" => FloatKind.Before,
+        "start" or "left" => FloatKind.Start,
+        "end" or "right" => FloatKind.End,
+        _ => FloatKind.None,
     };
 
     /// <summary>

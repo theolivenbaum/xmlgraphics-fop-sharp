@@ -374,6 +374,12 @@ public sealed class FoBlock(PropertyList properties) : FObj(properties)
 
     /// <summary>The minimum characters that must be pushed after a hyphenation point (default 2).</summary>
     public int HyphenationPushCharacterCount => Properties.HyphenationPushCharacterCount;
+
+    /// <summary>The <c>widows</c> count (inherited, default 2): min lines kept together at a page top.</summary>
+    public int Widows => Properties.Widows;
+
+    /// <summary>The <c>orphans</c> count (inherited, default 2): min lines kept together at a page bottom.</summary>
+    public int Orphans => Properties.Orphans;
 }
 
 /// <summary>
@@ -718,6 +724,98 @@ public sealed class FoFootnoteBody(PropertyList properties) : FObj(properties)
         ChildObjects.Where(c => c is FoBlock or FoTable or FoListBlock);
 }
 
+/// <summary>
+/// A neutral wrapper, <c>fo:wrapper</c>. A transparent grouping FO that generates no area of its own:
+/// it exists only to carry inherited properties (font, colour, language, …) onto its children. Its
+/// children may be inline-level (flattened in place with the wrapper's resolved style, since a
+/// <see cref="PropertyList"/> inherits from its parent FO) or block-level (stacked in the parent's
+/// flow). The wrapper itself is skipped; only its children produce areas.
+/// </summary>
+public sealed class FoWrapper(PropertyList properties) : FObj(properties)
+{
+    /// <inheritdoc/>
+    public override string LocalName => "wrapper";
+
+    /// <summary>
+    /// The block-level children of this wrapper (blocks, tables, lists, containers, floats), plus any
+    /// nested wrappers (so a wrapper-of-wrappers is expanded transparently by the layout engine).
+    /// </summary>
+    public IEnumerable<FObj> BlockLevelChildren =>
+        ChildObjects.Where(c => c is FoBlock or FoTable or FoListBlock or FoBlockContainer or FoFloat or FoWrapper);
+
+    /// <summary>
+    /// Whether this wrapper contains block-level content (directly, or through a nested wrapper). A
+    /// wrapper with block content is stacked in the block flow; a wrapper with only inline content is
+    /// flattened inline.
+    /// </summary>
+    public bool HasBlockLevelChildren => ChildObjects.Any(c =>
+        c is FoBlock or FoTable or FoListBlock or FoBlockContainer or FoFloat
+        || (c is FoWrapper nested && nested.HasBlockLevelChildren));
+}
+
+/// <summary>
+/// A float, <c>fo:float</c>. An out-of-line block-level FO whose block content is placed out of the
+/// normal flow according to its <c>float</c> property: a <c>before</c> float is anchored at the top of
+/// the region, while <c>none</c> lays the content out in place. (Side floats are parsed but not yet
+/// flowed around; the layout engine treats them as in-flow.)
+/// </summary>
+public sealed class FoFloat(PropertyList properties) : FObj(properties)
+{
+    /// <inheritdoc/>
+    public override string LocalName => "float";
+
+    /// <summary>The resolved <c>float</c> kind.</summary>
+    public FloatKind Float => Properties.Float;
+
+    /// <summary>The resolved box-model properties (border/padding/background) of the float.</summary>
+    public BoxProperties Box => Properties.GetBox();
+
+    /// <summary>The specified <c>width</c> of the float, or <c>null</c> for <c>auto</c>/unset.</summary>
+    public FoLength? Width
+    {
+        get
+        {
+            string? raw = Properties.GetRaw("width");
+            string? trimmed = raw?.Trim();
+            if (string.IsNullOrEmpty(trimmed) || trimmed.Equals("auto", StringComparison.OrdinalIgnoreCase))
+            {
+                return null;
+            }
+
+            return FoLength.TryParse(trimmed, Properties.FontSizeMpt);
+        }
+    }
+
+    /// <summary>The block-level children of this float (blocks, tables, lists), in document order.</summary>
+    public IEnumerable<FObj> BlockLevelChildren =>
+        ChildObjects.Where(c => c is FoBlock or FoTable or FoListBlock or FoBlockContainer);
+
+    /// <summary>
+    /// The float's resolved inline-progression width in millipoints, for a side float, given the
+    /// <paramref name="availableMpt"/> content width: the float's own <c>width</c> if specified, else
+    /// the (first) child <c>fo:block-container</c>'s specified <c>width</c>, else half the available
+    /// width as a fallback. Clamped to the available width.
+    /// </summary>
+    public double ResolveSideFloatWidthMpt(double availableMpt)
+    {
+        double? specified = Width?.Millipoints;
+        if (specified is null)
+        {
+            foreach (FObj child in BlockLevelChildren)
+            {
+                if (child is FoBlockContainer { Width: { } w })
+                {
+                    specified = w.Millipoints;
+                    break;
+                }
+            }
+        }
+
+        double width = specified ?? availableMpt / 2.0;
+        return Math.Clamp(width, 0, availableMpt);
+    }
+}
+
 /// <summary>An external image, <c>fo:external-graphic</c>.</summary>
 public sealed class FoExternalGraphic(PropertyList properties) : FObj(properties)
 {
@@ -741,6 +839,80 @@ public sealed class FoExternalGraphic(PropertyList properties) : FObj(properties
 
     /// <summary>The resolved box-model properties (borders, padding, background colour).</summary>
     public BoxProperties Box => Properties.GetBox();
+
+    /// <summary>
+    /// Whether <c>scaling</c> is <c>uniform</c> (the default) -- when one of content-width/height is
+    /// <c>auto</c>, the other drives a proportional scale that preserves the aspect ratio. <c>false</c>
+    /// for <c>non-uniform</c>, where an <c>auto</c> dimension takes the intrinsic size independently.
+    /// </summary>
+    public bool UniformScaling =>
+        !Properties.GetString("scaling", "uniform").Trim().Equals("non-uniform", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Resolves the drawn content size (millipoints) from the intrinsic image size and the
+    /// <c>content-width</c>/<c>content-height</c> (falling back to <c>width</c>/<c>height</c>)
+    /// properties, honouring percentages (of the intrinsic dimension), the <c>auto</c> keyword and
+    /// <c>scaling</c>. Mirrors the common cases of FOP's external-graphic sizing:
+    /// <list type="bullet">
+    /// <item>both auto -&gt; the intrinsic size;</item>
+    /// <item>one given, the other auto, uniform scaling -&gt; the other is scaled to preserve aspect;</item>
+    /// <item>both given -&gt; both honoured;</item>
+    /// <item>non-uniform scaling -&gt; an auto dimension keeps its intrinsic length.</item>
+    /// </list>
+    /// </summary>
+    public (double WidthMpt, double HeightMpt) ResolveContentSize(double intrinsicWidthMpt, double intrinsicHeightMpt)
+    {
+        double? w = ResolveDimension("content-width", intrinsicWidthMpt) ?? ResolveDimension("width", intrinsicWidthMpt);
+        double? h = ResolveDimension("content-height", intrinsicHeightMpt) ?? ResolveDimension("height", intrinsicHeightMpt);
+
+        if (w is null && h is null)
+        {
+            return (intrinsicWidthMpt, intrinsicHeightMpt);
+        }
+
+        if (w is not null && h is null)
+        {
+            double height = UniformScaling && intrinsicWidthMpt > 0
+                ? w.Value * intrinsicHeightMpt / intrinsicWidthMpt
+                : intrinsicHeightMpt;
+            return (w.Value, height);
+        }
+
+        if (w is null && h is not null)
+        {
+            double width = UniformScaling && intrinsicHeightMpt > 0
+                ? h.Value * intrinsicWidthMpt / intrinsicHeightMpt
+                : intrinsicWidthMpt;
+            return (width, h.Value);
+        }
+
+        return (w!.Value, h!.Value);
+    }
+
+    /// <summary>
+    /// Resolves a content dimension property to millipoints, returning <c>null</c> for <c>auto</c>,
+    /// <c>scale-to-fit</c> or an unset value. A percentage is taken against
+    /// <paramref name="intrinsicMpt"/> (the intrinsic dimension), matching the XSL-FO base for
+    /// content-width/content-height.
+    /// </summary>
+    private double? ResolveDimension(string name, double intrinsicMpt)
+    {
+        string? raw = Properties.GetRaw(name);
+        if (raw is null)
+        {
+            return null;
+        }
+
+        string trimmed = raw.Trim();
+        if (trimmed.Length == 0
+            || trimmed.Equals("auto", StringComparison.OrdinalIgnoreCase)
+            || trimmed.Equals("scale-to-fit", StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        return FoLength.TryParse(trimmed, Properties.FontSizeMpt, intrinsicMpt)?.Millipoints;
+    }
 
     private FoLength? ParseSizeProperty(string name)
     {

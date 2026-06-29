@@ -16,6 +16,7 @@
 using System.Text;
 using Fop.Fo;
 using Fop.Layout;
+using Fop.Render.Pdf.Native;
 
 namespace Fop.Render.Pdf;
 
@@ -36,14 +37,18 @@ public sealed class FopProcessor
     private readonly PdfSharpFontMeasurer measurer;
     private readonly LayoutEngine layoutEngine;
     private readonly PdfRenderer renderer;
+    private readonly NativePdfRenderer nativeRenderer;
 
     /// <summary>Creates a processor with the default PdfSharp font handling.</summary>
     public FopProcessor()
     {
         // Installs the FOP global resolver (idempotent) and binds to its shared registry.
         measurer = new PdfSharpFontMeasurer();
-        layoutEngine = new LayoutEngine(measurer);
+        layoutEngine = new LayoutEngine(measurer, new PdfSharpImageResolver());
         renderer = new PdfRenderer(measurer);
+        // The native renderer embeds the same faces the PdfSharp path resolves (Liberation/custom),
+        // via the shared resolver, so its output is self-contained rather than standard-14-only.
+        nativeRenderer = new NativePdfRenderer(measurer, new ResolverFontProvider(FopFontResolver.Shared));
     }
 
     /// <summary>
@@ -101,5 +106,45 @@ public sealed class FopProcessor
     {
         AreaTree tree = layoutEngine.LayOut(root);
         renderer.Render(tree, output);
+    }
+
+    /// <summary>
+    /// Converts an FO document stream to PDF using the <see cref="NativePdfRenderer"/> (the
+    /// PdfSharp-free output path built on the <c>Fop.Pdf</c> object model). Text uses the standard-14
+    /// fonts; raster images are drawn as placeholders. Layout (and thus text measurement) is shared
+    /// with the PdfSharp path, so positioning is identical.
+    /// </summary>
+    public void ConvertNative(Stream foInput, Stream pdfOutput)
+    {
+        ArgumentNullException.ThrowIfNull(foInput);
+        ArgumentNullException.ThrowIfNull(pdfOutput);
+        FoRoot root = FoTreeBuilder.Parse(foInput);
+        AreaTree tree = layoutEngine.LayOut(root);
+        nativeRenderer.Render(tree, pdfOutput);
+    }
+
+    /// <summary>Converts an FO document string to PDF bytes using the native renderer.</summary>
+    public byte[] ConvertNative(string foXml)
+    {
+        ArgumentNullException.ThrowIfNull(foXml);
+        FoRoot root = FoTreeBuilder.ParseString(foXml);
+        AreaTree tree = layoutEngine.LayOut(root);
+        using var buffer = new MemoryStream();
+        nativeRenderer.Render(tree, buffer);
+        return buffer.ToArray();
+    }
+
+    /// <summary>
+    /// Converts an FO document stream to PDF using the native renderer, encrypting the result with the
+    /// standard security handler per <paramref name="encryption"/> (passing <c>null</c> leaves it
+    /// unencrypted, equivalent to <see cref="ConvertNative(Stream, Stream)"/>).
+    /// </summary>
+    public void ConvertNative(Stream foInput, Stream pdfOutput, PdfEncryptionOptions? encryption)
+    {
+        ArgumentNullException.ThrowIfNull(foInput);
+        ArgumentNullException.ThrowIfNull(pdfOutput);
+        FoRoot root = FoTreeBuilder.Parse(foInput);
+        AreaTree tree = layoutEngine.LayOut(root);
+        nativeRenderer.Render(tree, pdfOutput, encryption);
     }
 }

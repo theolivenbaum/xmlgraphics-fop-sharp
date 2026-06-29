@@ -157,16 +157,33 @@ that stack with modern, cross-platform, managed libraries:
   `style` attribute for fill/stroke/opacity, simple `text`) into renderer-neutral vector primitives.
   `Fop.Layout` scales these onto an `fo:instream-foreign-object`'s content box as area-tree
   `VectorPath`s/`TextRun`s; the PdfSharp renderer paints them.
+- **`Fop.Render.Pdf.Native`** — a native, **PdfSharp-free** PDF renderer built on the `Fop.Pdf` object
+  model: it writes the file structure (objects/xref/trailer) directly and emits pages, text, vector
+  graphics, rules/backgrounds, link annotations, transformed groups (rotated containers under a
+  content-stream CTM) and the document outline. It **embeds raster images**
+  (`Fop.Imaging.RasterImage`: JPEG → DCTDecode pass-through, other formats → FlateDecode RGB with an
+  `/SMask` for alpha) and **embeds + subsets TrueType/OpenType fonts** as Type0 composite fonts
+  (Identity-H, `CIDFontType2`, `/ToUnicode`) so any Unicode the face covers renders -- not just WinAnsi
+  -- with the standard-14 fonts as a metric-compatible fallback (`TrueTypeSubsetter` rebuilds
+  `glyf`/`loca` keeping glyph ids; a sample drops ~630 KB → ~80 KB). Content streams are
+  FlateDecode-compressed, and the document can be **encrypted** (standard RC4-128 handler with
+  owner/user passwords + permissions via `PdfEncryptionOptions`). Exposed via
+  `FopProcessor.ConvertNative` and the CLI `-native` flag.
+- **`Fop.Render.Text`** — text-family back-ends (plain text, Markdown, HTML) rendered from the FO
+  tree's *logical* structure via a shared `DocExtractor` (paragraphs/headings/lists/tables/links/
+  images), rather than from the positioned area tree.
 - **`Fop.Cli`** — the `fop` command-line front-end: `fop in.fo out.pdf`, `-fo`/`-pdf`, an
-  `-xml`/`-xsl` XSLT-to-FO path, `-fontdir` font registration, and `-version`/`-help`. Packable as a
-  global .NET tool (`ToolCommandName=fop`).
+  `-xml`/`-xsl` XSLT-to-FO path, `-fontdir` font registration, `-native` (native renderer), the
+  `-txt`/`-md`/`-html` output formats (also inferred from the output extension), and `-version`/
+  `-help`. Packable as a global .NET tool (`ToolCommandName=fop`).
 
 A **working end-to-end FO→PDF pipeline** exists for a substantial XSL-FO subset:
 - block/inline text, fonts, colour, alignment/justification, indents, pagination;
 - the **box model** (borders, padding, backgrounds), painted across page breaks, and
   **external-graphic images**;
 - **tables** (%/proportional/absolute columns, header/body/footer, per-cell box, column & row
-  spanning, row pagination);
+  spanning, row pagination with repeating headers; a row taller than a whole page splits across pages
+  at text-line boundaries);
 - **lists** (`fo:list-block` with provisional label/body geometry, nesting);
 - **static content** — running headers/footers via `fo:region-before`/`after` + `fo:static-content`,
   with `fo:page-number`;
@@ -176,6 +193,11 @@ A **working end-to-end FO→PDF pipeline** exists for a substantial XSL-FO subse
 - **footnotes** (`fo:footnote`/`footnote-body`, rendered at the page bottom with the reserve
   reducing body height) and **`fo:page-number-citation`/`-last`** (forward/backward references
   resolved by a two-pass layout);
+- **`fo:float`** (`float="before"` anchored at the region top -- placed now when the region is empty,
+  else deferred to the top of the next region; `start`/`end` side floats reserve a vertical band on the
+  region edge so following blocks wrap into the remaining column; `none` lays out in-flow);
+- **`fo:wrapper`** (transparent grouping: inline content flattened with the wrapper's inherited style,
+  block-level children stacked in the parent flow; nested wrappers expand recursively);
 - **markers** (`fo:marker`/`retrieve-marker`, e.g. "current chapter" running headers) and
   **side regions** (`fo:region-start`/`end`);
 - **hyperlinks** (`fo:basic-link` → PDF internal/external link annotations) and **leaders**
@@ -191,7 +213,9 @@ A **working end-to-end FO→PDF pipeline** exists for a substantial XSL-FO subse
   built-in fallback; the measurer and PdfSharp resolver share one registry;
 - **PDF bookmarks** (`fo:bookmark-tree` → a nested, page-targeted document outline);
 - **`fo:block-container`** — absolute/fixed/auto positioning and `reference-orientation` rotation
-  (90/180/270) via a transform group rendered with PdfSharp transforms;
+  (90/180/270) via a transform group rendered with PdfSharp transforms; a `fo:basic-link` inside a
+  rotated container becomes a page-space link annotation whose rect is the axis-aligned bounding box
+  of its transformed corners;
 - **embedded SVG** (`fo:instream-foreign-object`) — a static SVG subset flattened to vector paths and
   painted to PDF (the `Fop.Svg` parser; no Batik dependency);
 - **text-decoration** (underline/overline/line-through) painted **over** the glyphs, positioned from
@@ -200,7 +224,7 @@ A **working end-to-end FO→PDF pipeline** exists for a substantial XSL-FO subse
   `baseline - 1.1*capHeight`, line-through `baseline - 0.45*capHeight`); and **letter-spacing**
   (per-glyph tracking between glyphs, `(n-1)` gaps per word, drawn glyph-by-glyph).
 
-The solution has 14 library projects and **925 passing tests** on .NET 10. See `samples/hello.fo`
+The solution has 17 library projects and **1,016 passing tests** on .NET 10. See `samples/hello.fo`
 (a clickable TOC with leaders, links, a marker header, and page-number citations) and
 `samples/svg-decoration.fo` (embedded SVG, text-decoration and letter-spacing). The `fop` CLI renders
 a document with `fop in.fo out.pdf`.

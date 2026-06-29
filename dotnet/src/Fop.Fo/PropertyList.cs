@@ -52,6 +52,8 @@ public sealed class PropertyList
         "hyphenation-push-character-count",
         "letter-spacing",
         "word-spacing",
+        "widows",
+        "orphans",
     };
 
     private const double DefaultFontSizeMpt = 12_000;
@@ -86,6 +88,14 @@ public sealed class PropertyList
             return value;
         }
 
+        // A shorthand declared on this element (e.g. margin, font, size) supplies the longhand before
+        // we fall back to inheritance, giving longhand-on-element > shorthand-on-element > inherited.
+        string? fromShorthand = PropertyShorthands.FromShorthand(name, own);
+        if (fromShorthand is not null)
+        {
+            return fromShorthand;
+        }
+
         if (InheritedProperties.Contains(name) && parent is not null)
         {
             return parent.GetRaw(name);
@@ -106,7 +116,7 @@ public sealed class PropertyList
     private double ResolveFontSize()
     {
         double parentSize = parent?.FontSizeMpt ?? DefaultFontSizeMpt;
-        string? raw = own.TryGetValue("font-size", out var v) ? v : null;
+        string? raw = own.TryGetValue("font-size", out var v) ? v : PropertyShorthands.FromShorthand("font-size", own);
         if (raw is null)
         {
             // font-size inherits.
@@ -205,6 +215,9 @@ public sealed class PropertyList
 
     /// <summary>The resolved <c>break-after</c> (not inherited; defaults to <see cref="BreakKind.Auto"/>).</summary>
     public BreakKind BreakAfter => FoEnumParsing.ParseBreak(GetRaw("break-after"));
+
+    /// <summary>The resolved <c>float</c> (not inherited; defaults to <see cref="FloatKind.None"/>).</summary>
+    public FloatKind Float => FoEnumParsing.ParseFloat(GetRaw("float"));
 
     /// <summary>
     /// The resolved <c>keep-together</c> within-page strength (not inherited; defaults to
@@ -347,6 +360,18 @@ public sealed class PropertyList
 
     /// <summary>The resolved <c>hyphenation-push-character-count</c> (inherited, default 2, minimum 1).</summary>
     public int HyphenationPushCharacterCount => GetPositiveInt("hyphenation-push-character-count", 2);
+
+    /// <summary>
+    /// The resolved <c>widows</c> (inherited, default 2, minimum 1): the minimum number of lines of a
+    /// block that must be left together at the top of a page when the block is split across a break.
+    /// </summary>
+    public int Widows => GetPositiveInt("widows", 2);
+
+    /// <summary>
+    /// The resolved <c>orphans</c> (inherited, default 2, minimum 1): the minimum number of lines of a
+    /// block that must be kept together at the bottom of a page when the block is split across a break.
+    /// </summary>
+    public int Orphans => GetPositiveInt("orphans", 2);
 
     private int GetPositiveInt(string name, int @default)
     {

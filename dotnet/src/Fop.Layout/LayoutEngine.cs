@@ -95,14 +95,29 @@ public sealed class LayoutEngine
         public Dictionary<string, MarkerContent> Carryover { get; } = new(StringComparer.Ordinal);
     }
 
+    private readonly IImageResolver? imageResolver;
+
     /// <summary>Creates a layout engine that measures text via <paramref name="measurer"/>.</summary>
     public LayoutEngine(IFontMeasurer measurer)
+        : this(measurer, imageResolver: null)
+    {
+    }
+
+    /// <summary>
+    /// Creates a layout engine with the given text <paramref name="measurer"/> and an optional
+    /// <paramref name="imageResolver"/> used to size <c>fo:external-graphic</c> images intrinsically.
+    /// </summary>
+    public LayoutEngine(IFontMeasurer measurer, IImageResolver? imageResolver)
     {
         this.measurer = measurer ?? throw new ArgumentNullException(nameof(measurer));
+        this.imageResolver = imageResolver;
     }
 
     /// <summary>The font measurer used by this engine.</summary>
     public IFontMeasurer Measurer => measurer;
+
+    /// <summary>The image resolver used to size external graphics, or <c>null</c> when none is set.</summary>
+    public IImageResolver? ImageResolver => imageResolver;
 
     /// <summary>
     /// The hyphenator consulted when a block enables <c>hyphenate</c> and a word does not fit on a line.
@@ -303,6 +318,23 @@ public sealed class LayoutEngine
         }
     }
 
+    /// <summary>
+    /// Records the <c>id</c> of <paramref name="root"/> and of <em>every</em> descendant formatting
+    /// object against <paramref name="pageNumber"/>. Used for content laid out into a relocatable
+    /// buffer (a table cell, list item label/body, footnote body) and then placed on a known page: the
+    /// whole buffer lands on one page in this model, so every id it contains resolves to that page.
+    /// This complements <see cref="RecordIdsOnPage"/>, which handles the paginating flow where nested
+    /// blocks self-record on their own pages.
+    /// </summary>
+    private void RecordIdsInSubtree(FObj root, int pageNumber, int pageIndex)
+    {
+        RecordId(IdOf(root), pageNumber, pageIndex);
+        foreach (FObj child in root.ChildObjects)
+        {
+            RecordIdsInSubtree(child, pageNumber, pageIndex);
+        }
+    }
+
     /// <summary>The declared <c>id</c> attribute of an object (keyed by local name), or empty if unset.</summary>
     private static string IdOf(FObj obj) => obj.Properties.GetString("id", string.Empty);
 
@@ -403,29 +435,34 @@ public sealed class LayoutEngine
         FoFlow? flowFo = seq.Flow;
         if (flowFo is not null)
         {
-            foreach (FObj child in flowFo.ChildObjects)
+            foreach (FObj child in ExpandWrappers(flowFo.ChildObjects))
             {
+                // The content band is taken after any forced break (which may start a fresh, float-free
+                // page), so a block wraps into the column left by an active side float.
                 switch (child)
                 {
                     case FoBlock block:
                         flow.ApplyBreak(block.BreakBefore);
-                        flow.LayOutBlock(block, geometry.ContentLeftMpt, geometry.ContentWidthMpt);
+                        flow.LayOutBandedBlock(block);
                         flow.ApplyBreak(block.BreakAfter);
                         break;
                     case FoTable table:
                         flow.ApplyBreak(table.BreakBefore);
-                        flow.LayOutTable(table, geometry.ContentLeftMpt, geometry.ContentWidthMpt);
+                        flow.LayOutBandedTable(table);
                         flow.ApplyBreak(table.BreakAfter);
                         break;
                     case FoListBlock list:
                         flow.ApplyBreak(list.BreakBefore);
-                        flow.LayOutList(list, geometry.ContentLeftMpt, geometry.ContentWidthMpt);
+                        flow.LayOutBandedList(list);
                         flow.ApplyBreak(list.BreakAfter);
                         break;
                     case FoBlockContainer container:
                         flow.ApplyBreak(container.BreakBefore);
-                        flow.LayOutBlockContainer(container, geometry.ContentLeftMpt, geometry.ContentWidthMpt);
+                        flow.LayOutBandedBlockContainer(container);
                         flow.ApplyBreak(container.BreakAfter);
+                        break;
+                    case FoFloat floatFo:
+                        flow.LayOutFloat(floatFo, geometry.ContentLeftMpt, geometry.ContentWidthMpt);
                         break;
                 }
             }
@@ -1150,6 +1187,110 @@ public sealed class LayoutEngine
 
         public void Add(LinkArea link) => links.Add(link);
 
+        /// <summary>The buffered text runs, in buffer-local coordinates. Used to find safe split points.</summary>
+        public IReadOnlyList<TextRun> Runs => runs;
+
+        /// <summary>
+        /// Splits the buffered content at the buffer-local y <paramref name="cut"/> into a head (content
+        /// above the cut) and a tail (content below, shifted up so the cut becomes the tail's origin).
+        /// Text runs, images and vector paths are assigned whole by position (the caller chooses a cut on
+        /// a text-line boundary so no run straddles); rectangles and links are clipped at the cut so a
+        /// background/border that crosses the boundary paints a slice on each side. Used to break an
+        /// over-tall table row across a page boundary.
+        /// </summary>
+        public (BufferedSink Head, BufferedSink Tail) SplitAt(double cut)
+        {
+            var head = new BufferedSink();
+            var tail = new BufferedSink();
+
+            foreach (RectFill r in rects)
+            {
+                double top = r.YMpt;
+                double bottom = r.YMpt + r.HeightMpt;
+                if (bottom <= cut)
+                {
+                    head.rects.Add(r);
+                }
+                else if (top >= cut)
+                {
+                    tail.rects.Add(r with { YMpt = top - cut });
+                }
+                else
+                {
+                    head.rects.Add(r with { HeightMpt = cut - top });
+                    tail.rects.Add(r with { YMpt = 0, HeightMpt = bottom - cut });
+                }
+            }
+
+            foreach (TextRun run in runs)
+            {
+                if (run.BaselineYMpt <= cut)
+                {
+                    head.runs.Add(run);
+                }
+                else
+                {
+                    tail.runs.Add(run with { BaselineYMpt = run.BaselineYMpt - cut });
+                }
+            }
+
+            foreach (ImageRun img in images)
+            {
+                if (img.YMpt < cut)
+                {
+                    head.images.Add(img);
+                }
+                else
+                {
+                    tail.images.Add(img with { YMpt = img.YMpt - cut });
+                }
+            }
+
+            foreach (VectorPath v in vectors)
+            {
+                if (MinSegmentY(v.Segments) < cut)
+                {
+                    head.vectors.Add(v);
+                }
+                else
+                {
+                    tail.vectors.Add(v with { Segments = TranslateSegments(v.Segments, 0, -cut) });
+                }
+            }
+
+            foreach (LinkArea l in links)
+            {
+                double top = l.YMpt;
+                double bottom = l.YMpt + l.HeightMpt;
+                if (bottom <= cut)
+                {
+                    head.links.Add(l);
+                }
+                else if (top >= cut)
+                {
+                    tail.links.Add(l with { YMpt = top - cut });
+                }
+                else
+                {
+                    head.links.Add(l with { HeightMpt = cut - top });
+                    tail.links.Add(l with { YMpt = 0, HeightMpt = bottom - cut });
+                }
+            }
+
+            return (head, tail);
+        }
+
+        private static double MinSegmentY(IReadOnlyList<PathSegment> segments)
+        {
+            double min = double.MaxValue;
+            foreach (PathSegment s in segments)
+            {
+                min = Math.Min(min, s.Y0);
+            }
+
+            return min == double.MaxValue ? 0 : min;
+        }
+
         /// <summary>Replays the buffered primitives onto <paramref name="target"/>, offset by (dx, dy).</summary>
         public void FlushTo(IPrimitiveSink target, double dx, double dy)
         {
@@ -1261,6 +1402,32 @@ public sealed class LayoutEngine
     // ----- Block stacking + pagination ------------------------------------------------------
 
     /// <summary>
+    /// Expands transparent <c>fo:wrapper</c>s in a block-stacking child sequence: a wrapper carrying
+    /// block-level children contributes those children in place (recursively), so the wrapper itself
+    /// generates no area while its children stack in the parent's flow. A wrapper with only inline
+    /// content (or any non-wrapper FO) passes through unchanged -- inline wrappers are flattened by
+    /// <see cref="InlineContent"/>. The children keep the wrapper as their parent, so the wrapper's
+    /// inherited properties still reach them.
+    /// </summary>
+    private static IEnumerable<FObj> ExpandWrappers(IEnumerable<FObj> children)
+    {
+        foreach (FObj child in children)
+        {
+            if (child is FoWrapper { HasBlockLevelChildren: true } wrapper)
+            {
+                foreach (FObj inner in ExpandWrappers(wrapper.BlockLevelChildren))
+                {
+                    yield return inner;
+                }
+            }
+            else
+            {
+                yield return child;
+            }
+        }
+    }
+
+    /// <summary>
     /// Per-page-sequence layout state: holds the current page, the vertical cursor and the page
     /// geometry, and drives block stacking, line breaking and pagination.
     /// </summary>
@@ -1307,6 +1474,23 @@ public sealed class LayoutEngine
 
         /// <summary>The footnote bodies queued for the current page, with their measured heights.</summary>
         private readonly List<(BufferedSink Body, double HeightMpt)> pendingFootnotes = new();
+
+        /// <summary>
+        /// Before-floats deferred to the top of the next region: a before-float encountered when the
+        /// current region already holds content cannot push that content down, so it waits and is placed
+        /// at the top of the next page that starts (mirroring FOP, which anchors a before-float at the
+        /// region top). Each entry carries the float's buffered content, its height and its source FO
+        /// (so ids inside it are attributed to the page it lands on).
+        /// </summary>
+        private readonly List<(BufferedSink Content, double HeightMpt, FObj Source)> pendingBeforeFloats = new();
+
+        /// <summary>
+        /// Side floats active on the current page: each reserves a vertical band on the start (left) or
+        /// end (right) edge of the content region. A flow block that begins while a band is active is
+        /// laid out into the remaining column (narrowed and, for a start float, shifted), so following
+        /// content wraps beside the float. Bands are page-local (cleared when a new page starts).
+        /// </summary>
+        private readonly List<(FloatKind Side, double TopMpt, double BottomMpt, double WidthMpt)> sideFloats = new();
 
         /// <summary>
         /// The bottom of the body content rectangle, reduced by this page's footnote reserve. Body
@@ -1357,6 +1541,10 @@ public sealed class LayoutEngine
             var buffer = new BufferedSink();
             double height = LayOutBlockLevelIntoBuffer(body.BlockLevelChildren, buffer, geometry.ContentWidthMpt);
 
+            // The footnote body is placed on the current (anchor's) page; record its ids so a citation
+            // to footnote content resolves to this page.
+            engine.RecordIdsInSubtree(body, currentPageNumber, IndexOfPage(page!));
+
             // The separator rule (+ gap) is added once, ahead of the first footnote on the page.
             if (pendingFootnotes.Count == 0)
             {
@@ -1398,8 +1586,204 @@ public sealed class LayoutEngine
             footnoteReserveMpt = 0;
         }
 
-        /// <summary>Finalizes the current page, flushing any pending footnote bodies. Called at sequence end.</summary>
-        public void FinishPage() => FlushFootnotes();
+        /// <summary>
+        /// Finalizes the current page, flushing any pending footnote bodies. Called at sequence end. A
+        /// before-float still pending here (encountered after content with no later page break) cannot
+        /// share the current region, so it is carried onto one final region of its own.
+        /// </summary>
+        public void FinishPage()
+        {
+            FlushFootnotes();
+            if (pendingBeforeFloats.Count > 0)
+            {
+                // StartNewPage places the pending before-floats at the top of the fresh region.
+                StartNewPage();
+            }
+        }
+
+        /// <summary>
+        /// Lays out an <c>fo:float</c> in the main flow. A <c>before</c> float is anchored at the top of
+        /// the region: placed immediately when the current region is still empty, otherwise deferred to
+        /// the top of the next region (see <see cref="pendingBeforeFloats"/>). A <c>start</c>/<c>end</c>
+        /// side float is placed against the region's start/end edge at the current cursor and reserves a
+        /// vertical band, so following flow blocks wrap into the remaining column (see
+        /// <see cref="sideFloats"/>). A <c>none</c> float lays its block content out in the normal flow.
+        /// </summary>
+        public void LayOutFloat(FoFloat floatFo, double leftMpt, double widthMpt)
+        {
+            switch (floatFo.Float)
+            {
+                case FloatKind.None:
+                    foreach (FObj child in floatFo.BlockLevelChildren)
+                    {
+                        DispatchFlowChild(child, leftMpt, widthMpt);
+                    }
+
+                    return;
+                case FloatKind.Start:
+                case FloatKind.End:
+                    LayOutSideFloat(floatFo);
+                    return;
+            }
+
+            EnsurePage();
+            var buffer = new BufferedSink();
+            double height = LayOutBlockLevelIntoBuffer(floatFo.BlockLevelChildren, buffer, widthMpt);
+            if (height <= 0)
+            {
+                return;
+            }
+
+            if (cursorY <= geometry.ContentTopMpt + 0.5)
+            {
+                // The region is empty: place the float at the top now; normal content flows below it.
+                buffer.FlushTo(new PageSink(page!), leftMpt, cursorY);
+                engine.RecordIdsInSubtree(floatFo, currentPageNumber, IndexOfPage(page!));
+                cursorY += height;
+            }
+            else
+            {
+                // Content is already on this region: defer to the top of the next region.
+                pendingBeforeFloats.Add((buffer, height, floatFo));
+            }
+        }
+
+        /// <summary>
+        /// Places a start/end side float against the current content band's edge at the cursor and
+        /// registers a vertical band so subsequent flow blocks wrap beside it. The float content (and any
+        /// box) is laid into a buffer at the float's resolved width; the main cursor is not advanced
+        /// (content flows beside the float). The band is clamped to the region bottom.
+        /// </summary>
+        private void LayOutSideFloat(FoFloat floatFo)
+        {
+            EnsurePage();
+            (double bandLeft, double bandWidth) = ContentBand();
+
+            BoxProperties box = floatFo.Box;
+            double floatWidth = Math.Min(floatFo.ResolveSideFloatWidthMpt(bandWidth), bandWidth);
+            if (floatWidth <= 0)
+            {
+                return;
+            }
+
+            double contentWidth = Math.Max(0, floatWidth - box.LeftInsetMpt - box.RightInsetMpt);
+            var buffer = new BufferedSink();
+            double contentHeight = LayOutBlockLevelIntoBuffer(floatFo.BlockLevelChildren, buffer, contentWidth);
+            double floatHeight = contentHeight + box.TopInsetMpt + box.BottomInsetMpt;
+            if (floatHeight <= 0)
+            {
+                return;
+            }
+
+            // Start floats hug the band's left edge; end floats hug its right edge.
+            double floatLeft = floatFo.Float == FloatKind.Start
+                ? bandLeft
+                : bandLeft + bandWidth - floatWidth;
+            double top = cursorY;
+
+            var sink = new PageSink(page!);
+            EmitBox(sink, box, floatLeft, top, floatWidth, floatHeight);
+            buffer.FlushTo(sink, floatLeft + box.LeftInsetMpt, top + box.TopInsetMpt);
+            engine.RecordIdsInSubtree(floatFo, currentPageNumber, IndexOfPage(page!));
+
+            double bottom = Math.Min(top + floatHeight, geometry.ContentBottomMpt);
+            sideFloats.Add((floatFo.Float, top, bottom, floatWidth));
+        }
+
+        /// <summary>
+        /// The content band available to a flow block starting at the current cursor: the region content
+        /// rectangle narrowed by every side float whose vertical band the cursor falls within (a start
+        /// float shifts the left edge in and shrinks the width; an end float only shrinks the width).
+        /// </summary>
+        private (double Left, double Width) ContentBand()
+        {
+            double left = geometry.ContentLeftMpt;
+            double width = geometry.ContentWidthMpt;
+            foreach ((FloatKind side, double top, double bottom, double floatWidth) in sideFloats)
+            {
+                if (cursorY + 0.5 >= bottom)
+                {
+                    continue; // the cursor has cleared this float
+                }
+
+                if (side == FloatKind.Start)
+                {
+                    left += floatWidth;
+                }
+
+                width -= floatWidth;
+            }
+
+            return (left, Math.Max(0, width));
+        }
+
+        /// <summary>Lays out a flow block into the current content band (narrowed by active side floats).</summary>
+        public void LayOutBandedBlock(FoBlock block)
+        {
+            (double left, double width) = ContentBand();
+            LayOutBlock(block, left, width);
+        }
+
+        /// <summary>Lays out a flow table into the current content band.</summary>
+        public void LayOutBandedTable(FoTable table)
+        {
+            (double left, double width) = ContentBand();
+            LayOutTable(table, left, width);
+        }
+
+        /// <summary>Lays out a flow list into the current content band.</summary>
+        public void LayOutBandedList(FoListBlock list)
+        {
+            (double left, double width) = ContentBand();
+            LayOutList(list, left, width);
+        }
+
+        /// <summary>Lays out a flow block-container into the current content band.</summary>
+        public void LayOutBandedBlockContainer(FoBlockContainer container)
+        {
+            (double left, double width) = ContentBand();
+            LayOutBlockContainer(container, left, width);
+        }
+
+        /// <summary>Places any deferred before-floats at the current cursor (the top of a fresh region).</summary>
+        private void PlacePendingBeforeFloats()
+        {
+            if (pendingBeforeFloats.Count == 0 || page is null)
+            {
+                return;
+            }
+
+            var sink = new PageSink(page);
+            int pageIndex = IndexOfPage(page);
+            foreach ((BufferedSink content, double height, FObj source) in pendingBeforeFloats)
+            {
+                content.FlushTo(sink, geometry.ContentLeftMpt, cursorY);
+                engine.RecordIdsInSubtree(source, currentPageNumber, pageIndex);
+                cursorY += height;
+            }
+
+            pendingBeforeFloats.Clear();
+        }
+
+        /// <summary>Dispatches one block-level flow child to the matching flow-level layout method.</summary>
+        private void DispatchFlowChild(FObj child, double leftMpt, double widthMpt)
+        {
+            switch (child)
+            {
+                case FoBlock block:
+                    LayOutBlock(block, leftMpt, widthMpt);
+                    break;
+                case FoTable table:
+                    LayOutTable(table, leftMpt, widthMpt);
+                    break;
+                case FoListBlock list:
+                    LayOutList(list, leftMpt, widthMpt);
+                    break;
+                case FoBlockContainer container:
+                    LayOutBlockContainer(container, leftMpt, widthMpt);
+                    break;
+            }
+        }
 
         /// <summary>Ensures a page exists, creating a blank one if none has been started yet.</summary>
         public void EnsurePage()
@@ -1535,8 +1919,9 @@ public sealed class LayoutEngine
 
             // Record this block's id (and any inline-descendant ids) against the page it begins on, for
             // page-number-citation resolution. Only the paginating flow has a meaningful page number;
-            // ids inside relocatable buffers (table cells, footnote bodies) are not recorded here
-            // (documented approximation -- such a ref-id resolves to "?").
+            // ids inside relocatable buffers (table cells, list items, footnote bodies) are recorded
+            // separately when those buffers are placed on a page (see PlaceRow/LayOutListItem/
+            // ReserveFootnote).
             if (target.CanPaginate)
             {
                 EnsurePage();
@@ -1585,7 +1970,7 @@ public sealed class LayoutEngine
             double childLeft = contentLeft + block.StartIndent.Millipoints;
             double childWidth = Math.Max(0,
                 contentWidth - block.StartIndent.Millipoints - block.EndIndent.Millipoints);
-            foreach (FObj child in block.ChildObjects)
+            foreach (FObj child in ExpandWrappers(block.ChildObjects))
             {
                 // break-before/after only force pagination in the paginating main flow; inside a
                 // relocatable buffer (table cell / list body) there is no page to break to.
@@ -1675,11 +2060,19 @@ public sealed class LayoutEngine
         {
             BoxProperties box = graphic.Box;
 
-            // Intrinsic/specified size. Without a decoder in the layout layer we use the specified
-            // content-width/height, defaulting to a square placeholder when unset.
+            string source = graphic.Source;
+            string? path = source.Length > 0 ? source : null;
+
+            // Intrinsic size from the image (via the injected resolver, which reads pixel size + DPI).
+            // When no resolver is set or the image cannot be read, fall back to a 72pt square so an
+            // unsized graphic still reserves a visible, square placeholder area.
             double defaultSize = FoLength.FromPoints(72).Millipoints;
-            double imageWidth = graphic.ContentWidth?.Millipoints ?? defaultSize;
-            double imageHeight = graphic.ContentHeight?.Millipoints ?? defaultSize;
+            ImageIntrinsics? intrinsic = engine.ImageResolver?.Resolve(path, bytes: null);
+            double intrinsicWidth = intrinsic?.WidthMpt ?? defaultSize;
+            double intrinsicHeight = intrinsic?.HeightMpt ?? defaultSize;
+
+            // content-width/content-height (with scaling + percentages) over the intrinsic size.
+            (double imageWidth, double imageHeight) = graphic.ResolveContentSize(intrinsicWidth, intrinsicHeight);
 
             double borderBoxWidth = imageWidth + box.LeftInsetMpt + box.RightInsetMpt;
             double borderBoxHeight = imageHeight + box.TopInsetMpt + box.BottomInsetMpt;
@@ -1692,8 +2085,6 @@ public sealed class LayoutEngine
             double imageX = leftMpt + box.LeftInsetMpt;
             double imageY = boxTop + box.TopInsetMpt;
 
-            string source = graphic.Source;
-            string? path = source.Length > 0 ? source : null;
             sink.Add(new ImageRun(imageX, imageY, imageWidth, imageHeight, path, SourceBytes: null));
 
             EmitBox(sink, box, leftMpt, boxTop, borderBoxWidth, borderBoxHeight);
@@ -1769,22 +2160,109 @@ public sealed class LayoutEngine
             // are modelled inside the breaker as flagged penalties, so a word may be split mid-line when
             // that improves the paragraph; the chosen fragment is rendered with the hyphenation character
             // and the remainder carried to the next line by BreakIntoLines.
-            List<LineBox> lines = engine.BreakIntoLines(block, words, widthMpt);
-            for (int i = 0; i < lines.Count; i++)
+            List<LineBox> lines = engine.BreakIntoLines(block, words, widthMpt).FindAll(l => l.Words.Count > 0);
+            if (lines.Count == 0)
             {
-                LineBox line = lines[i];
-                if (line.Words.Count == 0)
+                return;
+            }
+
+            double Advance(LineBox l) => Math.Max(lineHeight, l.Height);
+
+            void Emit(LineBox line, bool isLast)
+            {
+                double advance = Advance(line);
+                IPrimitiveSink sink = target.SinkForAdvance(this, advance);
+                engine.EmitLine(sink, line, leftMpt, widthMpt, lineHeight, target.Cursor(this), align, isLast);
+                target.Advance(this, advance);
+            }
+
+            // Inside a relocatable buffer there is no page to break against; emit straight through.
+            if (!target.CanPaginate)
+            {
+                for (int i = 0; i < lines.Count; i++)
                 {
-                    continue;
+                    Emit(lines[i], i == lines.Count - 1);
                 }
 
-                bool isLastLine = i == lines.Count - 1;
-                double advance = Math.Max(lineHeight, line.Height);
+                return;
+            }
 
-                IPrimitiveSink sink = target.SinkForAdvance(this, advance);
-                engine.EmitLine(sink, line, leftMpt, widthMpt, lineHeight, target.Cursor(this), align, isLastLine);
+            // Paginating flow: place the block's lines page by page, honouring orphans (min lines kept
+            // at a page bottom) and widows (min lines carried to the next page).
+            int orphans = Math.Max(1, block.Orphans);
+            int widows = Math.Max(1, block.Widows);
+            int start = 0;
+            while (start < lines.Count)
+            {
+                EnsurePage();
 
-                target.Advance(this, advance);
+                // How many of the remaining lines fit from the current cursor (a line at the very top of
+                // a page is never pushed forward, matching PageForLine, so an over-tall block still
+                // makes progress).
+                int fit = 0;
+                double y = cursorY;
+                while (start + fit < lines.Count)
+                {
+                    double a = Advance(lines[start + fit]);
+                    if (y + a > ContentBottomMpt && y > geometry.ContentTopMpt)
+                    {
+                        break;
+                    }
+
+                    y += a;
+                    fit++;
+                }
+
+                int remaining = lines.Count - start;
+                int place;
+                if (fit >= remaining)
+                {
+                    place = remaining; // the rest of the block fits
+                }
+                else
+                {
+                    bool atTop = cursorY <= geometry.ContentTopMpt + 1;
+
+                    // Orphans: if too few of the block's first lines fit here, move the whole block to the
+                    // next page (only when it isn't already at the page top -- otherwise it cannot help).
+                    if (start == 0 && fit < orphans && !atTop)
+                    {
+                        StartNewPage();
+                        continue;
+                    }
+
+                    place = fit;
+
+                    // Widows: don't leave fewer than `widows` lines for the next page; pull lines back to
+                    // this page's break so the tail page keeps at least `widows` lines.
+                    if (remaining - place < widows)
+                    {
+                        int want = remaining - widows;
+                        int floor = start == 0 ? orphans : 1; // keep orphans intact on the block's first page
+                        if (want >= floor)
+                        {
+                            place = Math.Min(place, want);
+                        }
+                        else if (!atTop)
+                        {
+                            StartNewPage(); // can't satisfy both here; retry the chunk at a page top
+                            continue;
+                        }
+                    }
+
+                    place = Math.Max(1, place); // always make progress
+                }
+
+                for (int k = 0; k < place; k++)
+                {
+                    Emit(lines[start + k], start + k == lines.Count - 1);
+                }
+
+                start += place;
+                if (start < lines.Count)
+                {
+                    StartNewPage();
+                }
             }
         }
 
@@ -1895,6 +2373,27 @@ public sealed class LayoutEngine
         private void PlaceRowPaginated(LaidRow row, double contentLeft, double[] columnWidths,
             List<LaidRow> header, double headerHeight, IBlockTarget target)
         {
+            // A row taller than a whole empty content region can never fit on any page: rather than
+            // overflow the region bottom, split it across pages at text-line boundaries. Only the
+            // paginating flow can split, and only when no row-spanning cell is involved (a spanning cell
+            // crossing a break is handled at its origin page -- a documented approximation).
+            double fullPageHeight = ContentBottomMpt - geometry.ContentTopMpt;
+            bool hasSpanningCell = false;
+            foreach (LaidCell c in row.Cells)
+            {
+                if (c.RowSpan != 1 || Math.Abs(c.SpannedHeightMpt - row.Height) > 0.5)
+                {
+                    hasSpanningCell = true;
+                    break;
+                }
+            }
+
+            if (target.CanPaginate && !hasSpanningCell && row.Height > fullPageHeight)
+            {
+                PlaceRowSplit(row, contentLeft, columnWidths, header, headerHeight);
+                return;
+            }
+
             // SinkForAdvance paginates the flow target if the row would overflow the page; the buffer
             // target returns its buffer unchanged. When the flow target moved to a fresh page the cursor
             // is now at the content top, which is how we detect that the header should be repeated.
@@ -1916,10 +2415,228 @@ public sealed class LayoutEngine
             PlaceRow(row, contentLeft, columnWidths, target);
         }
 
+        /// <summary>
+        /// Places a row that is taller than a full content region by splitting it across pages. Each
+        /// iteration emits the slice of every cell that fits in the remaining space (cutting on a
+        /// text-line boundary), paints the cell/row box for that slice (top border only on the first
+        /// slice, bottom border only on the last), then starts a new page (repeating the header) and
+        /// continues with the remainder. Flow-only.
+        /// </summary>
+        private void PlaceRowSplit(LaidRow row, double contentLeft, double[] columnWidths,
+            List<LaidRow> header, double headerHeight)
+        {
+            // Attribute ids inside the row's cells to the page the row begins on (its content is anchored
+            // here even though later slices spill forward).
+            EnsurePage();
+            int pageNumber = currentPageNumber;
+            int pageIndex = IndexOfPage(page!);
+            foreach (LaidCell cell in row.Cells)
+            {
+                engine.RecordIdsInSubtree(cell.Source, pageNumber, pageIndex);
+            }
+
+            LaidRow current = row;
+            bool firstSlice = true;
+            while (true)
+            {
+                EnsurePage();
+                double rowTop = cursorY;
+                double remaining = ContentBottomMpt - rowTop;
+                bool atPageTop = rowTop <= geometry.ContentTopMpt + 0.5;
+
+                if (current.Height <= remaining + 0.5)
+                {
+                    EmitRowSegment(new PageSink(page!), current, contentLeft, rowTop, columnWidths,
+                        paintTop: firstSlice, paintBottom: true);
+                    cursorY = rowTop + current.Height;
+                    return;
+                }
+
+                double cut = LargestSafeCut(current, remaining, atPageTop);
+                if (cut <= 0.5 || cut >= current.Height - 0.5)
+                {
+                    if (atPageTop)
+                    {
+                        // Nothing splits cleanly and the page is already empty: emit the whole remainder
+                        // (it overflows, but advancing would loop forever).
+                        EmitRowSegment(new PageSink(page!), current, contentLeft, rowTop, columnWidths,
+                            paintTop: firstSlice, paintBottom: true);
+                        cursorY = rowTop + current.Height;
+                        return;
+                    }
+
+                    // Move the remainder to a fresh page and retry from its top.
+                    StartNewPage();
+                    RepeatHeader(header, headerHeight, contentLeft, columnWidths);
+                    continue;
+                }
+
+                (LaidRow head, LaidRow tail) = SplitRow(current, cut);
+                EmitRowSegment(new PageSink(page!), head, contentLeft, rowTop, columnWidths,
+                    paintTop: firstSlice, paintBottom: false);
+                StartNewPage();
+                RepeatHeader(header, headerHeight, contentLeft, columnWidths);
+                current = tail;
+                firstSlice = false;
+            }
+        }
+
+        /// <summary>Re-emits the repeating header rows at the current cursor when they fit on the page.</summary>
+        private void RepeatHeader(List<LaidRow> header, double headerHeight, double contentLeft,
+            double[] columnWidths)
+        {
+            if (header.Count == 0 || cursorY + headerHeight > ContentBottomMpt)
+            {
+                return;
+            }
+
+            foreach (LaidRow h in header)
+            {
+                EnsurePage();
+                EmitRowAt(new PageSink(page!), h, contentLeft, cursorY, columnWidths);
+                cursorY += h.Height;
+            }
+        }
+
+        /// <summary>
+        /// Returns the largest row-local y at which <paramref name="row"/> can be cut without bisecting a
+        /// line of text, no greater than <paramref name="limit"/>. A cut is valid when every cell's text
+        /// line sits wholly above or below it. When nothing fits and the page is already empty
+        /// (<paramref name="atPageTop"/>), returns the first line's bottom so at least one line is placed
+        /// (avoiding an infinite loop on an over-tall single line).
+        /// </summary>
+        private double LargestSafeCut(LaidRow row, double limit, bool atPageTop)
+        {
+            var bands = new List<(double Top, double Bottom)>();
+            var candidates = new SortedSet<double>();
+            foreach (LaidCell cell in row.Cells)
+            {
+                double off = cell.Box.TopInsetMpt;
+                foreach (TextRun run in cell.Content.Runs)
+                {
+                    double top = off + run.BaselineYMpt - engine.measurer.AscenderMpt(run.Font);
+                    double bottom = off + run.BaselineYMpt + engine.measurer.DescenderMpt(run.Font);
+                    bands.Add((top, bottom));
+                    candidates.Add(bottom);
+                }
+            }
+
+            double best = 0;
+            foreach (double c in candidates)
+            {
+                if (c > limit + 0.5)
+                {
+                    break;
+                }
+
+                bool straddles = false;
+                foreach ((double top, double bottom) in bands)
+                {
+                    if (c > top + 0.5 && c < bottom - 0.5)
+                    {
+                        straddles = true;
+                        break;
+                    }
+                }
+
+                if (!straddles)
+                {
+                    best = c;
+                }
+            }
+
+            if (best <= 0.5 && atPageTop && bands.Count > 0)
+            {
+                best = bands.Min(b => b.Bottom);
+            }
+
+            return best;
+        }
+
+        /// <summary>
+        /// Splits <paramref name="row"/> at the row-local y <paramref name="cut"/> into a head row of
+        /// height <paramref name="cut"/> and a tail row carrying the remainder, splitting each cell's
+        /// buffered content at the corresponding buffer-local boundary.
+        /// </summary>
+        private static (LaidRow Head, LaidRow Tail) SplitRow(LaidRow row, double cut)
+        {
+            var headCells = new List<LaidCell>(row.Cells.Count);
+            var tailCells = new List<LaidCell>(row.Cells.Count);
+            double tailHeight = row.Height - cut;
+
+            foreach (LaidCell cell in row.Cells)
+            {
+                double bufCut = cut - cell.Box.TopInsetMpt;
+                BufferedSink headContent;
+                BufferedSink tailContent;
+                if (bufCut <= 0)
+                {
+                    headContent = new BufferedSink();
+                    tailContent = cell.Content;
+                }
+                else
+                {
+                    (headContent, tailContent) = cell.Content.SplitAt(bufCut);
+                }
+
+                headCells.Add(new LaidCell(cell.StartColumn, cell.ColumnSpan, 1, cell.Box, headContent,
+                    Math.Max(0, bufCut), cell.Source) { SpannedHeightMpt = cut });
+                tailCells.Add(new LaidCell(cell.StartColumn, cell.ColumnSpan, 1, cell.Box, tailContent,
+                    Math.Max(0, cell.ContentHeightMpt - bufCut), cell.Source) { SpannedHeightMpt = tailHeight });
+            }
+
+            return (new LaidRow(headCells, cut, row.Box), new LaidRow(tailCells, tailHeight, row.Box));
+        }
+
+        /// <summary>
+        /// Emits one slice of a (possibly split) row: the row box, each cell box and each cell's buffered
+        /// content. <paramref name="paintTop"/>/<paramref name="paintBottom"/> control which horizontal
+        /// borders paint, so a split row's top border shows only on its first slice and its bottom border
+        /// only on its last.
+        /// </summary>
+        private static void EmitRowSegment(IPrimitiveSink sink, LaidRow row, double contentLeft,
+            double rowTop, double[] columnWidths, bool paintTop, bool paintBottom)
+        {
+            double rowWidth = 0;
+            for (int c = 0; c < columnWidths.Length; c++)
+            {
+                rowWidth += columnWidths[c];
+            }
+
+            EmitBoxSegment(sink, row.Box, contentLeft, rowTop, rowWidth, row.Height, paintTop, paintBottom);
+
+            foreach (LaidCell cell in row.Cells)
+            {
+                double cellLeft = contentLeft + ColumnOffset(columnWidths, cell.StartColumn);
+                double cellWidth = SpannedWidth(columnWidths, cell.StartColumn, cell.ColumnSpan);
+                double cellHeight = cell.SpannedHeightMpt > 0 ? cell.SpannedHeightMpt : row.Height;
+                EmitBoxSegment(sink, cell.Box, cellLeft, rowTop, cellWidth, cellHeight, paintTop, paintBottom);
+
+                double contentX = cellLeft + cell.Box.LeftInsetMpt;
+                double contentY = rowTop + cell.Box.TopInsetMpt;
+                cell.Content.FlushTo(sink, contentX, contentY);
+            }
+        }
+
         /// <summary>Emits a laid-out row at the current cursor (no pagination) and advances the cursor.</summary>
         private void PlaceRow(LaidRow row, double contentLeft, double[] columnWidths, IBlockTarget target)
         {
             IPrimitiveSink sink = target.SinkForAdvance(this, row.Height);
+
+            // Record the ids inside each cell against the page the row lands on, so a
+            // page-number-citation referencing content in a table cell resolves (the cell's whole
+            // buffer is placed on this page). Only the paginating flow has a page to attribute to.
+            if (target.CanPaginate)
+            {
+                EnsurePage();
+                int pageNumber = currentPageNumber;
+                int pageIndex = IndexOfPage(page!);
+                foreach (LaidCell cell in row.Cells)
+                {
+                    engine.RecordIdsInSubtree(cell.Source, pageNumber, pageIndex);
+                }
+            }
+
             EmitRowAt(sink, row, contentLeft, target.Cursor(this), columnWidths);
             target.Advance(this, row.Height);
         }
@@ -2017,7 +2734,7 @@ public sealed class LayoutEngine
                     double consumed = LayOutBlockLevelIntoBuffer(cell.BlockLevelChildren, buffer, contentWidth);
                     double cellHeight = consumed + cellBox.TopInsetMpt + cellBox.BottomInsetMpt;
 
-                    var laid = new LaidCell(startColumn, colSpan, rowSpan, cellBox, buffer, consumed);
+                    var laid = new LaidCell(startColumn, colSpan, rowSpan, cellBox, buffer, consumed, cell);
                     perRow[r].Add(laid);
 
                     if (rowSpan == 1)
@@ -2094,7 +2811,18 @@ public sealed class LayoutEngine
         private double LayOutBlockLevelIntoBuffer(IEnumerable<FObj> children, BufferedSink buffer, double widthMpt)
         {
             var target = new BufferTarget(buffer);
-            foreach (FObj child in children)
+            DispatchBlockLevel(children, target, widthMpt);
+            return target.LocalCursor;
+        }
+
+        /// <summary>
+        /// Dispatches each block-level child onto <paramref name="target"/> (a buffer). An
+        /// <c>fo:float</c> in a buffered context cannot be anchored to a region top, so its block content
+        /// is laid out in place on the same target (preserving cursor continuity).
+        /// </summary>
+        private void DispatchBlockLevel(IEnumerable<FObj> children, IBlockTarget target, double widthMpt)
+        {
+            foreach (FObj child in ExpandWrappers(children))
             {
                 switch (child)
                 {
@@ -2113,10 +2841,11 @@ public sealed class LayoutEngine
                     case FoInstreamForeignObject foreign:
                         LayOutInstreamForeignObject(foreign, 0, widthMpt, target);
                         break;
+                    case FoFloat floatFo:
+                        DispatchBlockLevel(floatFo.BlockLevelChildren, target, widthMpt);
+                        break;
                 }
             }
-
-            return target.LocalCursor;
         }
 
         // ----- Lists ------------------------------------------------------------------------
@@ -2211,6 +2940,14 @@ public sealed class LayoutEngine
             // with the current block/table behaviour). Knuth-style item splitting is future work.
             IPrimitiveSink sink = target.SinkForAdvance(this, itemHeight);
             double itemTop = target.Cursor(this);
+
+            // Record the ids in the item's label/body (buffered) against the page it lands on, so a
+            // citation to content inside a list item resolves. Flow-only (a buffer has no page).
+            if (target.CanPaginate)
+            {
+                EnsurePage();
+                engine.RecordIdsInSubtree(item, currentPageNumber, IndexOfPage(page!));
+            }
 
             // The item's own border box spans the full content width (label column + gap + body column),
             // plus the item's own insets. The inner content width is bodyLeftOffset + bodyWidth (the
@@ -2533,6 +3270,9 @@ public sealed class LayoutEngine
             tree.AddPage(page);
             cursorY = geometry.ContentTopMpt;
 
+            // Side floats reserve space on the page they are anchored to; a fresh page starts clear.
+            sideFloats.Clear();
+
             // Snapshot the running carryover (markers from earlier pages of this sequence) into the new
             // page's record, so a retrieve-marker on this page can fall back to an earlier marker even
             // when nothing of its class starts here.
@@ -2541,6 +3281,10 @@ public sealed class LayoutEngine
             {
                 carryover[cls] = content;
             }
+
+            // Any before-floats deferred from an earlier region are anchored at the top of this fresh
+            // region, ahead of the normal flow content (which will paginate below them).
+            PlacePendingBeforeFloats();
         }
 
         /// <summary>
@@ -2607,7 +3351,7 @@ public sealed class LayoutEngine
     /// </summary>
     private sealed record LaidCell(
         int StartColumn, int ColumnSpan, int RowSpan, BoxProperties Box, BufferedSink Content,
-        double ContentHeightMpt)
+        double ContentHeightMpt, FoTableCell Source)
     {
         /// <summary>The painted box height (spanned rows combined); set after row heights are resolved.</summary>
         public double SpannedHeightMpt { get; set; }

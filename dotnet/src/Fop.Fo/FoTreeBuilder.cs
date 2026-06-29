@@ -196,6 +196,8 @@ public static class FoTreeBuilder
         "page-number-citation-last" => new FoPageNumberCitationLast(properties),
         "footnote" => new FoFootnote(properties),
         "footnote-body" => new FoFootnoteBody(properties),
+        "float" => new FoFloat(properties),
+        "wrapper" => new FoWrapper(properties),
         "external-graphic" => new FoExternalGraphic(properties),
         "instream-foreign-object" => new FoInstreamForeignObject(properties),
         "bookmark-tree" => new FoBookmarkTree(properties),
@@ -216,7 +218,7 @@ public static class FoTreeBuilder
     };
 
     private static bool IsContentContainer(FObj obj) =>
-        obj is FoBlock or FoInline or FoBasicLink or FoGeneric or FoMarker or FoBookmarkTitle;
+        obj is FoBlock or FoInline or FoBasicLink or FoWrapper or FoGeneric or FoMarker or FoBookmarkTitle;
 
     /// <summary>Collapses runs of XSL-FO whitespace to a single space (the default behaviour).</summary>
     public static string CollapseWhitespace(string text)
