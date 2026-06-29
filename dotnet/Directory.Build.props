@@ -19,8 +19,20 @@
     <Product>Apache FOP for .NET</Product>
     <Copyright>Licensed under the Apache License, Version 2.0</Copyright>
     <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/theolivenbaum/xmlgraphics-fop-sharp</PackageProjectUrl>
     <RepositoryUrl>https://github.com/theolivenbaum/xmlgraphics-fop-sharp</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageTags>fop;xsl-fo;xslfo;pdf;apache-fop;rendering</PackageTags>
+    <PackageRequireLicenseAcceptance>false</PackageRequireLicenseAcceptance>
     <VersionPrefix>0.1.0</VersionPrefix>
+
+    <!--
+      By default nothing in the solution produces a NuGet package. The component
+      libraries are bundled into a single 'Fop' package (see src/Fop) and the CLI
+      ships as a .NET tool (see src/Fop.Cli); those two projects opt back in with
+      <IsPackable>true</IsPackable>.
+    -->
+    <IsPackable>false</IsPackable>
   </PropertyGroup>
 
 </Project>
