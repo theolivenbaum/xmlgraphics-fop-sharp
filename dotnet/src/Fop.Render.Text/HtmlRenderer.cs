@@ -47,21 +47,26 @@ public sealed class HtmlRenderer
         ArgumentNullException.ThrowIfNull(root);
         ArgumentNullException.ThrowIfNull(output);
         using var writer = new StreamWriter(output, new UTF8Encoding(false), leaveOpen: true);
-        writer.Write(Render(root));
+        Render(root, writer);
     }
 
     /// <summary>Renders an already-parsed FO tree to an HTML document.</summary>
     public string Render(FoRoot root)
     {
         ArgumentNullException.ThrowIfNull(root);
-        var sb = new StringBuilder();
-        sb.Append("<!DOCTYPE html>\n<html>\n<head>\n<meta charset=\"utf-8\">\n</head>\n<body>\n");
-        WriteBlocks(sb, DocExtractor.Extract(root), indent: "  ");
-        sb.Append("</body>\n</html>\n");
-        return sb.ToString();
+        using var writer = new StringWriter();
+        Render(root, writer);
+        return writer.ToString();
     }
 
-    private void WriteBlocks(StringBuilder sb, IReadOnlyList<DocBlock> blocks, string indent)
+    private void Render(FoRoot root, TextWriter writer)
+    {
+        writer.Write("<!DOCTYPE html>\n<html>\n<head>\n<meta charset=\"utf-8\">\n</head>\n<body>\n");
+        WriteBlocks(writer, DocExtractor.Extract(root), indent: "  ");
+        writer.Write("</body>\n</html>\n");
+    }
+
+    private void WriteBlocks(TextWriter writer, IReadOnlyList<DocBlock> blocks, string indent)
     {
         foreach (DocBlock block in blocks)
         {
@@ -77,75 +82,96 @@ public sealed class HtmlRenderer
                     }
 
                     string tag = heading ? "h" + p.HeadingLevel : "p";
-                    sb.Append(indent).Append('<').Append(tag).Append('>').Append(content)
-                        .Append("</").Append(tag).Append(">\n");
+                    writer.Write(indent);
+                    writer.Write('<');
+                    writer.Write(tag);
+                    writer.Write('>');
+                    writer.Write(content);
+                    writer.Write("</");
+                    writer.Write(tag);
+                    writer.Write(">\n");
                     break;
 
                 case DocList list:
-                    sb.Append(indent).Append("<ul>\n");
+                    writer.Write(indent);
+                    writer.Write("<ul>\n");
                     foreach (DocListItem item in list.Items)
                     {
-                        sb.Append(indent).Append("  <li>");
-                        WriteInlineOrBlocks(sb, item.Body, indent + "  ");
-                        sb.Append("</li>\n");
+                        writer.Write(indent);
+                        writer.Write("  <li>");
+                        WriteInlineOrBlocks(writer, item.Body, indent + "  ");
+                        writer.Write("</li>\n");
                     }
 
-                    sb.Append(indent).Append("</ul>\n");
+                    writer.Write(indent);
+                    writer.Write("</ul>\n");
                     break;
 
                 case DocTable table:
-                    WriteTable(sb, table, indent);
+                    WriteTable(writer, table, indent);
                     break;
 
                 case DocImage image:
-                    sb.Append(indent).Append("<img src=\"").Append(AttrEscape(image.Source))
-                        .Append("\" alt=\"").Append(AttrEscape(image.Alt)).Append("\">\n");
+                    writer.Write(indent);
+                    writer.Write("<img src=\"");
+                    writer.Write(AttrEscape(image.Source));
+                    writer.Write("\" alt=\"");
+                    writer.Write(AttrEscape(image.Alt));
+                    writer.Write("\">\n");
                     break;
             }
         }
     }
 
-    private void WriteTable(StringBuilder sb, DocTable table, string indent)
+    private void WriteTable(TextWriter writer, DocTable table, string indent)
     {
-        sb.Append(indent).Append("<table>\n");
+        writer.Write(indent);
+        writer.Write("<table>\n");
         foreach (DocTableRow row in table.Rows)
         {
-            sb.Append(indent).Append("  <tr>");
+            writer.Write(indent);
+            writer.Write("  <tr>");
             string cellTag = row.IsHeader ? "th" : "td";
             foreach (DocTableCell cell in row.Cells)
             {
-                sb.Append('<').Append(cellTag);
+                writer.Write('<');
+                writer.Write(cellTag);
                 if (cell.ColumnSpan > 1)
                 {
-                    sb.Append(" colspan=\"").Append(cell.ColumnSpan).Append('"');
+                    writer.Write(" colspan=\"");
+                    writer.Write(cell.ColumnSpan);
+                    writer.Write('"');
                 }
 
-                sb.Append('>');
-                WriteInlineOrBlocks(sb, cell.Body, indent);
-                sb.Append("</").Append(cellTag).Append('>');
+                writer.Write('>');
+                WriteInlineOrBlocks(writer, cell.Body, indent);
+                writer.Write("</");
+                writer.Write(cellTag);
+                writer.Write('>');
             }
 
-            sb.Append("</tr>\n");
+            writer.Write("</tr>\n");
         }
 
-        sb.Append(indent).Append("</table>\n");
+        writer.Write(indent);
+        writer.Write("</table>\n");
     }
 
     /// <summary>
     /// Writes a cell/list-item body: a single paragraph emits just its inline content, while richer
     /// content (nested lists, multiple paragraphs, images) is emitted as full block markup.
     /// </summary>
-    private void WriteInlineOrBlocks(StringBuilder sb, IReadOnlyList<DocBlock> body, string indent)
+    private void WriteInlineOrBlocks(TextWriter writer, IReadOnlyList<DocBlock> body, string indent)
     {
         if (body is [DocParagraph only])
         {
-            sb.Append(Inline(only.Inlines));
+            writer.Write(Inline(only.Inlines));
             return;
         }
 
-        sb.Append('\n');
-        WriteBlocks(sb, body, indent + "  ");
-        sb.Append(indent);
+        writer.Write('\n');
+        WriteBlocks(writer, body, indent + "  ");
+        writer.Write(indent);
     }
 
     private string Inline(IReadOnlyList<DocInline> inlines, bool suppressBold = false)

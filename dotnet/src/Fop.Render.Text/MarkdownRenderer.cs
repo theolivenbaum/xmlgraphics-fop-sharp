@@ -46,19 +46,28 @@ public sealed class MarkdownRenderer
         ArgumentNullException.ThrowIfNull(root);
         ArgumentNullException.ThrowIfNull(output);
         using var writer = new StreamWriter(output, new UTF8Encoding(false), leaveOpen: true);
-        writer.Write(Render(root));
+        Render(root, writer);
     }
 
     /// <summary>Renders an already-parsed FO tree to Markdown.</summary>
     public string Render(FoRoot root)
     {
         ArgumentNullException.ThrowIfNull(root);
-        var sb = new StringBuilder();
-        WriteBlocks(sb, DocExtractor.Extract(root));
-        return sb.ToString().TrimEnd() + "\n";
+        using var writer = new StringWriter();
+        Render(root, writer);
+        return writer.ToString();
     }
 
-    private void WriteBlocks(StringBuilder sb, IReadOnlyList<DocBlock> blocks)
+    private void Render(FoRoot root, TextWriter writer)
+    {
+        // Stream straight to the writer; the trimmer drops the document's trailing blank lines and
+        // emits the single terminating newline the back-end guarantees.
+        var trimmer = new TrailingWhitespaceTrimmer(writer);
+        WriteBlocks(trimmer, DocExtractor.Extract(root));
+        trimmer.FinishWithNewline();
+    }
+
+    private void WriteBlocks(TextWriter writer, IReadOnlyList<DocBlock> blocks)
     {
         foreach (DocBlock block in blocks)
         {
@@ -75,36 +84,41 @@ public sealed class MarkdownRenderer
 
                     if (heading)
                     {
-                        sb.Append(new string('#', p.HeadingLevel)).Append(' ').Append(text).Append("\n\n");
-                    }
-                    else
-                    {
-                        sb.Append(text).Append("\n\n");
+                        writer.Write(new string('#', p.HeadingLevel));
+                        writer.Write(' ');
                     }
 
+                    writer.Write(text);
+                    writer.Write("\n\n");
                     break;
 
                 case DocList list:
                     foreach (DocListItem item in list.Items)
                     {
-                        sb.Append("- ").Append(FlattenInline(item.Body)).Append('\n');
+                        writer.Write("- ");
+                        writer.Write(FlattenInline(item.Body));
+                        writer.Write('\n');
                     }
 
-                    sb.Append('\n');
+                    writer.Write('\n');
                     break;
 
                 case DocTable table:
-                    WriteTable(sb, table);
+                    WriteTable(writer, table);
                     break;
 
                 case DocImage image:
-                    sb.Append("![").Append(Escape(image.Alt)).Append("](").Append(image.Source).Append(")\n\n");
+                    writer.Write("![");
+                    writer.Write(Escape(image.Alt));
+                    writer.Write("](");
+                    writer.Write(image.Source);
+                    writer.Write(")\n\n");
                     break;
             }
         }
     }
 
-    private void WriteTable(StringBuilder sb, DocTable table)
+    private void WriteTable(TextWriter writer, DocTable table)
     {
         if (table.Rows.Count == 0)
         {
@@ -116,37 +130,41 @@ public sealed class MarkdownRenderer
         // GitHub tables require a header row; use the first row (synthesizing blank headers if the
         // table has no explicit header row).
         DocTableRow first = table.Rows[0];
-        WriteRow(sb, first, columns);
-        sb.Append('|').Append(string.Concat(Enumerable.Repeat(" --- |", columns))).Append('\n');
+        WriteRow(writer, first, columns);
+        writer.Write('|');
+        writer.Write(string.Concat(Enumerable.Repeat(" --- |", columns)));
+        writer.Write('\n');
         foreach (DocTableRow row in table.Rows.Skip(1))
         {
-            WriteRow(sb, row, columns);
+            WriteRow(writer, row, columns);
         }
 
-        sb.Append('\n');
+        writer.Write('\n');
     }
 
-    private void WriteRow(StringBuilder sb, DocTableRow row, int columns)
+    private void WriteRow(TextWriter writer, DocTableRow row, int columns)
     {
-        sb.Append('|');
+        writer.Write('|');
         int emitted = 0;
         foreach (DocTableCell cell in row.Cells)
         {
             string text = FlattenInline(cell.Body).Replace("|", "\\|");
-            sb.Append(' ').Append(text).Append(" |");
+            writer.Write(' ');
+            writer.Write(text);
+            writer.Write(" |");
             emitted += cell.ColumnSpan;
             for (int i = 1; i < cell.ColumnSpan; i++)
             {
-                sb.Append("  |"); // spanned columns as empty cells (Markdown has no colspan)
+                writer.Write("  |"); // spanned columns as empty cells (Markdown has no colspan)
             }
         }
 
         for (; emitted < columns; emitted++)
         {
-            sb.Append("  |");
+            writer.Write("  |");
         }
 
-        sb.Append('\n');
+        writer.Write('\n');
     }
 
     private string Inline(IReadOnlyList<DocInline> inlines, bool suppressBold = false)
