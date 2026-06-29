@@ -37,21 +37,37 @@ public sealed class PlainTextRenderer
     {
         ArgumentNullException.ThrowIfNull(foInput);
         ArgumentNullException.ThrowIfNull(output);
-        string text = Render(FoTreeBuilder.Parse(foInput));
+        Render(FoTreeBuilder.Parse(foInput), output);
+    }
+
+    /// <summary>Renders an already-parsed FO tree to plain text, written (UTF-8) to <paramref name="output"/>.</summary>
+    public void Render(FoRoot root, Stream output)
+    {
+        ArgumentNullException.ThrowIfNull(root);
+        ArgumentNullException.ThrowIfNull(output);
         using var writer = new StreamWriter(output, new UTF8Encoding(false), leaveOpen: true);
-        writer.Write(text);
+        Render(root, writer);
     }
 
     /// <summary>Renders an already-parsed FO tree to plain text.</summary>
     public string Render(FoRoot root)
     {
         ArgumentNullException.ThrowIfNull(root);
-        var sb = new StringBuilder();
-        WriteBlocks(sb, DocExtractor.Extract(root), indent: string.Empty);
-        return sb.ToString().TrimEnd() + "\n";
+        using var writer = new StringWriter();
+        Render(root, writer);
+        return writer.ToString();
     }
 
-    private static void WriteBlocks(StringBuilder sb, IReadOnlyList<DocBlock> blocks, string indent)
+    private static void Render(FoRoot root, TextWriter writer)
+    {
+        // Stream straight to the writer; the trimmer drops the document's trailing blank lines and
+        // emits the single terminating newline the back-end guarantees.
+        var trimmer = new TrailingWhitespaceTrimmer(writer);
+        WriteBlocks(trimmer, DocExtractor.Extract(root), indent: string.Empty);
+        trimmer.FinishWithNewline();
+    }
+
+    private static void WriteBlocks(TextWriter writer, IReadOnlyList<DocBlock> blocks, string indent)
     {
         foreach (DocBlock block in blocks)
         {
@@ -61,7 +77,9 @@ public sealed class PlainTextRenderer
                     string text = InlineText(p.Inlines);
                     if (text.Length > 0)
                     {
-                        sb.Append(indent).Append(text).Append("\n\n");
+                        writer.Write(indent);
+                        writer.Write(text);
+                        writer.Write("\n\n");
                     }
 
                     break;
@@ -69,27 +87,31 @@ public sealed class PlainTextRenderer
                 case DocList list:
                     foreach (DocListItem item in list.Items)
                     {
-                        string body = FlattenBlocks(item.Body);
-                        sb.Append(indent).Append("  - ").Append(body).Append('\n');
+                        writer.Write(indent);
+                        writer.Write("  - ");
+                        writer.Write(FlattenBlocks(item.Body));
+                        writer.Write('\n');
                     }
 
-                    sb.Append('\n');
+                    writer.Write('\n');
                     break;
 
                 case DocTable table:
                     foreach (DocTableRow row in table.Rows)
                     {
-                        sb.Append(indent)
-                            .Append(string.Join('\t', row.Cells.Select(c => FlattenBlocks(c.Body))))
-                            .Append('\n');
+                        writer.Write(indent);
+                        writer.Write(string.Join('\t', row.Cells.Select(c => FlattenBlocks(c.Body))));
+                        writer.Write('\n');
                     }
 
-                    sb.Append('\n');
+                    writer.Write('\n');
                     break;
 
                 case DocImage image:
-                    sb.Append(indent).Append('[').Append(image.Source.Length > 0 ? "image: " + image.Source : image.Alt)
-                        .Append("]\n\n");
+                    writer.Write(indent);
+                    writer.Write('[');
+                    writer.Write(image.Source.Length > 0 ? "image: " + image.Source : image.Alt);
+                    writer.Write("]\n\n");
                     break;
             }
         }

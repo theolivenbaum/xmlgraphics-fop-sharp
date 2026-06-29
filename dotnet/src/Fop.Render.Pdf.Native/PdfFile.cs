@@ -71,28 +71,39 @@ internal sealed class PdfFile
         return result;
     }
 
-    /// <summary>Serializes the whole document to <paramref name="output"/>.</summary>
+    /// <summary>
+    /// Serializes the whole document directly to <paramref name="output"/>. The file is written in a
+    /// single forward pass: each cross-reference offset is the running byte position as the object is
+    /// emitted, so no part of the document is buffered in memory beyond the object bodies already held,
+    /// and the output stream need not be seekable.
+    /// </summary>
     public void WriteTo(Stream output)
     {
-        var buffer = new MemoryStream();
+        long position = 0;
 
-        void Emit(string s) => buffer.Write(Encoding.Latin1.GetBytes(s));
+        void EmitBytes(byte[] bytes)
+        {
+            output.Write(bytes);
+            position += bytes.Length;
+        }
+
+        void Emit(string s) => EmitBytes(Encoding.Latin1.GetBytes(s));
 
         // Header with a binary marker comment so tools treat the file as binary.
         Emit("%PDF-1.7\n");
-        buffer.Write([(byte)'%', 0xE2, 0xE3, 0xCF, 0xD3, (byte)'\n']);
+        EmitBytes([(byte)'%', 0xE2, 0xE3, 0xCF, 0xD3, (byte)'\n']);
 
         int count = bodies.Count - 1; // highest object number
         var offsets = new long[bodies.Count];
         for (int n = 1; n < bodies.Count; n++)
         {
-            offsets[n] = buffer.Position;
+            offsets[n] = position;
             Emit($"{n} 0 obj\n");
-            buffer.Write(bodies[n] ?? Encoding.Latin1.GetBytes("null")); // unwritten -> null object
+            EmitBytes(bodies[n] ?? Encoding.Latin1.GetBytes("null")); // unwritten -> null object
             Emit("\nendobj\n");
         }
 
-        long xrefOffset = buffer.Position;
+        long xrefOffset = position;
         Emit($"xref\n0 {count + 1}\n");
         Emit("0000000000 65535 f \n");
         for (int n = 1; n <= count; n++)
@@ -104,8 +115,5 @@ internal sealed class PdfFile
         string id = FileIdHex is { } fid ? $" /ID [<{fid}> <{fid}>]" : string.Empty;
         Emit($"trailer\n<< /Size {count + 1} /Root 1 0 R{encrypt}{id} >>\n");
         Emit($"startxref\n{xrefOffset.ToString(CultureInfo.InvariantCulture)}\n%%EOF\n");
-
-        buffer.Position = 0;
-        buffer.CopyTo(output);
     }
 }

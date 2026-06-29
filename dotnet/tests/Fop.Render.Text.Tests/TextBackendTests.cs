@@ -13,6 +13,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+using System.IO;
+using System.Text;
+using Fop.Fo;
 using Fop.Render.Text;
 using Xunit;
 
@@ -132,5 +135,35 @@ public class TextBackendTests
             """;
         Assert.Contains("<body>", new HtmlRenderer().Convert(fo));
         Assert.Equal("\n", new PlainTextRenderer().Convert(fo));
+    }
+
+    [Fact]
+    public void RenderToStreamMatchesRenderToString()
+    {
+        FoRoot root = FoTreeBuilder.ParseString(Doc);
+
+        Assert.Equal(new HtmlRenderer().Render(root), RenderToString((r, s) => r.Render(root, s), new HtmlRenderer()));
+        Assert.Equal(new MarkdownRenderer().Render(root), RenderToString((r, s) => r.Render(root, s), new MarkdownRenderer()));
+        Assert.Equal(new PlainTextRenderer().Render(root), RenderToString((r, s) => r.Render(root, s), new PlainTextRenderer()));
+    }
+
+    [Fact]
+    public void RenderToStreamLeavesStreamOpen()
+    {
+        FoRoot root = FoTreeBuilder.ParseString(Doc);
+        using var stream = new MemoryStream();
+
+        new HtmlRenderer().Render(root, stream);
+
+        // The renderer must not close the caller's stream; it should still be writable afterwards.
+        Assert.True(stream.CanWrite);
+        Assert.True(stream.Length > 0);
+    }
+
+    private static string RenderToString<T>(Action<T, Stream> render, T renderer)
+    {
+        using var stream = new MemoryStream();
+        render(renderer, stream);
+        return new UTF8Encoding(false).GetString(stream.ToArray());
     }
 }
