@@ -47,9 +47,17 @@ steps:
     arguments: '-c $(buildConfiguration) /p:Version=$(targetVersion) /p:LangVersion=latest'
   displayName: 'build solution'
 
-# Only the 'Fop' library and the 'Fop.Cli' .NET tool are packable
+# Only the 'FOP.Sharp' library and the 'FOP.Sharp.Cli' .NET tool are packable
 # (every other project sets <IsPackable>false</IsPackable>), so packing the
 # whole solution produces exactly those two packages.
+#
+# NOTE: we intentionally do NOT pass --no-build here. The FOP.Sharp library
+# packs every component assembly via a custom target that depends on
+# ResolveReferences; with --no-build that reference resolution still triggers a
+# build of the component projects, which then fails with NETSDK1085 ("NoBuild
+# was set to true but the Build target was invoked"). Letting pack build is an
+# incremental no-op because the 'build solution' step above already built
+# everything in this configuration.
 - task: DotNetCoreCLI@2
   inputs:
     command: 'pack'
@@ -57,7 +65,6 @@ steps:
     versioningScheme: 'off'
     configuration: '$(buildConfiguration)'
     buildProperties: 'Version="$(targetVersion)";LangVersion="latest"'
-    nobuild: true
   displayName: 'pack nuget packages'
 
 - task: NuGetCommand@2
