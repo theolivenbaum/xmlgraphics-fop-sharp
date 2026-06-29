@@ -74,6 +74,25 @@ public class NativePdfRendererTests
     }
 
     [Fact]
+    public void WritesToNonSeekableStream()
+    {
+        // The native writer serializes in a single forward pass (xref offsets tracked by a running
+        // byte counter), so it must not require a seekable output stream.
+        using var foInput = new MemoryStream(Encoding.UTF8.GetBytes(OnePage));
+        using var backing = new MemoryStream();
+        using (var output = new WriteOnlyForwardStream(backing))
+        {
+            new FopProcessor().ConvertNative(foInput, output);
+        }
+
+        byte[] pdf = backing.ToArray();
+        Assert.Equal("%PDF-", Encoding.ASCII.GetString(pdf, 0, 5));
+        using var reopen = new MemoryStream(pdf);
+        using var doc = PdfReader.Open(reopen, PdfDocumentOpenMode.Import);
+        Assert.Equal(1, doc.PageCount);
+    }
+
+    [Fact]
     public void MultiPageDocumentReportsCorrectPageCount()
     {
         var blocks = new StringBuilder();
@@ -99,5 +118,30 @@ public class NativePdfRendererTests
         using var input = new MemoryStream(pdf);
         using var doc = PdfReader.Open(input, PdfDocumentOpenMode.Import);
         Assert.True(doc.PageCount > 1, $"expected multiple pages, got {doc.PageCount}");
+    }
+
+    /// <summary>A forward-only, non-seekable stream that forwards writes to a backing stream.</summary>
+    private sealed class WriteOnlyForwardStream(Stream backing) : Stream
+    {
+        public override bool CanRead => false;
+        public override bool CanSeek => false;
+        public override bool CanWrite => true;
+        public override long Length => throw new NotSupportedException();
+
+        public override long Position
+        {
+            get => throw new NotSupportedException();
+            set => throw new NotSupportedException();
+        }
+
+        public override void Write(byte[] buffer, int offset, int count) => backing.Write(buffer, offset, count);
+
+        public override void Flush() => backing.Flush();
+
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+
+        public override void SetLength(long value) => throw new NotSupportedException();
+
+        public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
     }
 }
