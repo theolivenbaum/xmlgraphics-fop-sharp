@@ -257,10 +257,15 @@ public sealed class NativePdfRenderer
         double pageHeightPt = page.HeightMpt / MptPerPoint;
         var sb = new StringBuilder();
 
-        // Paint order matches the PdfSharp renderer: rects, images, vectors, then text.
+        // Paint order matches the PdfSharp renderer: rects, background images, images, vectors, then text.
         foreach (RectFill rect in page.RectFills)
         {
             EmitRect(sb, rect, pageHeightPt);
+        }
+
+        foreach (BackgroundImageArea background in page.BackgroundImages)
+        {
+            EmitBackgroundImage(sb, background, pageHeightPt, doc, imageCache, xobjectsOnPage, enc);
         }
 
         foreach (ImageRun image in page.Images)
@@ -312,6 +317,11 @@ public sealed class NativePdfRenderer
         foreach (RectFill rect in group.RectFills)
         {
             EmitRect(sb, rect, 0);
+        }
+
+        foreach (BackgroundImageArea background in group.BackgroundImages)
+        {
+            EmitBackgroundImage(sb, background, 0, doc, imageCache, xobjectsOnPage, enc);
         }
 
         foreach (ImageRun image in group.Images)
@@ -378,6 +388,78 @@ public sealed class NativePdfRenderer
             .Append(F(w)).Append(' ').Append(F(h)).Append(" re f\n");
         sb.Append("0.63 0.63 0.63 RG 0.5 w ").Append(F(x)).Append(' ').Append(F(y)).Append(' ')
             .Append(F(w)).Append(' ').Append(F(h)).Append(" re S\n");
+    }
+
+    /// <summary>
+    /// Paints a tiled <see cref="BackgroundImageArea"/>: the image is embedded once (shared across tiles
+    /// and pages), the content stream is clipped to the padding rectangle (<c>re W n</c>), and the image
+    /// XObject is drawn once per tile under a scaling CTM. A non-tiling axis is offset by the resolved
+    /// background-position. Mirrors FOP's <c>drawBackground</c>. An undecodable image is skipped.
+    /// </summary>
+    private static void EmitBackgroundImage(StringBuilder sb, BackgroundImageArea background,
+        double pageHeightPt, PdfFile doc, Dictionary<string, int> imageCache,
+        Dictionary<string, int> xobjectsOnPage, IObjectEncryptor enc)
+    {
+        if (background.WidthMpt <= 0 || background.HeightMpt <= 0)
+        {
+            return;
+        }
+
+        ImageDimensions? dims = ImageDimensions.TryRead(background.SourcePath, background.SourceBytes);
+        if (dims is not { } size)
+        {
+            return;
+        }
+
+        double tileWMpt = size.WidthMpt();
+        double tileHMpt = size.HeightMpt();
+        if (tileWMpt <= 0 || tileHMpt <= 0)
+        {
+            return;
+        }
+
+        int? xobject = ResolveImageObject(
+            new ImageRun(0, 0, 0, 0, background.SourcePath, background.SourceBytes), doc, imageCache, enc);
+        if (xobject is not int num)
+        {
+            return;
+        }
+
+        BackgroundTiling tiling = BackgroundTiling.Compute(
+            background.WidthMpt, background.HeightMpt, tileWMpt, tileHMpt, background.Repeat,
+            background.PositionHorizontal, background.PositionVertical);
+
+        string key = "Im" + num;
+        xobjectsOnPage[key] = num;
+
+        double clipX = background.XMpt / MptPerPoint;
+        double clipW = background.WidthMpt / MptPerPoint;
+        double clipH = background.HeightMpt / MptPerPoint;
+        double clipYTop = background.YMpt / MptPerPoint;
+        // PDF user space is bottom-left origin: the clip rect's lower-left y is page height minus the
+        // padding rectangle's bottom edge.
+        double clipYBottom = pageHeightPt - (clipYTop + clipH);
+        double tileW = tileWMpt / MptPerPoint;
+        double tileH = tileHMpt / MptPerPoint;
+        double startX = clipX + tiling.OffsetXMpt / MptPerPoint;
+        double startYTop = clipYTop + tiling.OffsetYMpt / MptPerPoint;
+
+        sb.Append("q\n");
+        sb.Append(F(clipX)).Append(' ').Append(F(clipYBottom)).Append(' ').Append(F(clipW)).Append(' ')
+            .Append(F(clipH)).Append(" re W n\n");
+        for (int ix = 0; ix < tiling.HorizontalCount; ix++)
+        {
+            for (int iy = 0; iy < tiling.VerticalCount; iy++)
+            {
+                double x = startX + ix * tileW;
+                double yTop = startYTop + iy * tileH;
+                double y = pageHeightPt - (yTop + tileH);
+                sb.Append("q ").Append(F(tileW)).Append(" 0 0 ").Append(F(tileH)).Append(' ')
+                    .Append(F(x)).Append(' ').Append(F(y)).Append(" cm /").Append(key).Append(" Do Q\n");
+            }
+        }
+
+        sb.Append("Q\n");
     }
 
     /// <summary>

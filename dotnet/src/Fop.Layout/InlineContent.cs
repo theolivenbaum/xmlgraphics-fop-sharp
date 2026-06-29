@@ -160,6 +160,14 @@ internal static class InlineContent
                     AppendWords(text.Text, font, color, words, currentLink: null);
                     break;
 
+                // fo:character contributes its single character in its own style.
+                case FoCharacter character when character.Character.Length > 0:
+                    words.Add(new StyledWord(character.Character, FontKeyFor(character),
+                        character.Properties.GetColor(),
+                        LetterSpacingMpt: character.LetterSpacingMpt,
+                        Decoration: character.TextDecorationTraits));
+                    break;
+
                 // A nested marker is not part of this marker's rendered content.
                 case FoMarker:
                     break;
@@ -187,6 +195,15 @@ internal static class InlineContent
             {
                 case FOText text:
                     AppendWords(text.Text, font, color, words, currentLink, letterSpacing, decoration);
+                    break;
+
+                // fo:character contributes its single character as one styled word in its own font/
+                // colour/letter-spacing/decoration (independent of the enclosing run's style).
+                case FoCharacter character when character.Character.Length > 0:
+                    words.Add(new StyledWord(character.Character, FontKeyFor(character),
+                        character.Properties.GetColor(), currentLink,
+                        LetterSpacingMpt: character.LetterSpacingMpt,
+                        Decoration: character.TextDecorationTraits));
                     break;
 
                 // fo:page-number resolves to the current page number as a single styled word.

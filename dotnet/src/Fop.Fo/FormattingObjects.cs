@@ -475,6 +475,38 @@ public sealed class FoInline(PropertyList properties) : FObj(properties)
 }
 
 /// <summary>
+/// A character, <c>fo:character</c>. An inline-level formatting object that contributes exactly one
+/// character (the <c>character</c> property) styled with its own font/colour/decoration -- the way
+/// XSL-FO references a specific glyph (e.g. a bullet, an em dash) with full property control. Port of
+/// <c>org.apache.fop.fo.flow.Character</c> (the richer suppress-at-line-break / treat-as-word-space
+/// behaviour is not modelled; the character flows as an ordinary one-character word).
+/// <para>
+/// In this engine's word-atom line model the character is a standalone inline word, so it is best used
+/// on its own or whitespace-separated; gluing it directly to adjacent text (no whitespace) leaves a
+/// word break where FOP would join them.
+/// </para>
+/// </summary>
+public sealed class FoCharacter(PropertyList properties) : FObj(properties)
+{
+    /// <inheritdoc/>
+    public override string LocalName => "character";
+
+    /// <summary>
+    /// The resolved <c>character</c> property: the single character to render, or the empty string when
+    /// unset. A character reference (e.g. <c>&amp;#x2022;</c>) is resolved by the XML parser before it
+    /// reaches the property, so this is the literal character. Only the first character is used.
+    /// </summary>
+    public string Character
+    {
+        get
+        {
+            string raw = Properties.GetString("character", string.Empty);
+            return raw.Length == 0 ? string.Empty : raw[..1];
+        }
+    }
+}
+
+/// <summary>
 /// A basic link, <c>fo:basic-link</c>. An inline-level container whose children flow inline as
 /// ordinary content (typically styled as a link) and whose extent becomes a clickable region. The
 /// link targets either an internal area by its <see cref="InternalDestination"/> (a <c>ref-id</c>,

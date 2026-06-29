@@ -1129,6 +1129,8 @@ public sealed class LayoutEngine
 
         void Add(RectFill rect);
 
+        void Add(BackgroundImageArea background);
+
         void Add(ImageRun image);
 
         void Add(VectorPath vector);
@@ -1143,6 +1145,8 @@ public sealed class LayoutEngine
 
         public void Add(RectFill rect) => page.Add(rect);
 
+        public void Add(BackgroundImageArea background) => page.Add(background);
+
         public void Add(ImageRun image) => page.Add(image);
 
         public void Add(VectorPath vector) => page.Add(vector);
@@ -1156,6 +1160,8 @@ public sealed class LayoutEngine
         public void Add(TextRun run) => group.Add(run);
 
         public void Add(RectFill rect) => group.Add(rect);
+
+        public void Add(BackgroundImageArea background) => group.Add(background);
 
         public void Add(ImageRun image) => group.Add(image);
 
@@ -1172,6 +1178,7 @@ public sealed class LayoutEngine
     private sealed class BufferedSink : IPrimitiveSink
     {
         private readonly List<RectFill> rects = new();
+        private readonly List<BackgroundImageArea> backgrounds = new();
         private readonly List<TextRun> runs = new();
         private readonly List<ImageRun> images = new();
         private readonly List<VectorPath> vectors = new();
@@ -1180,6 +1187,8 @@ public sealed class LayoutEngine
         public void Add(TextRun run) => runs.Add(run);
 
         public void Add(RectFill rect) => rects.Add(rect);
+
+        public void Add(BackgroundImageArea background) => backgrounds.Add(background);
 
         public void Add(ImageRun image) => images.Add(image);
 
@@ -1219,6 +1228,27 @@ public sealed class LayoutEngine
                 {
                     head.rects.Add(r with { HeightMpt = cut - top });
                     tail.rects.Add(r with { YMpt = 0, HeightMpt = bottom - cut });
+                }
+            }
+
+            foreach (BackgroundImageArea bg in backgrounds)
+            {
+                double top = bg.YMpt;
+                double bottom = bg.YMpt + bg.HeightMpt;
+                if (bottom <= cut)
+                {
+                    head.backgrounds.Add(bg);
+                }
+                else if (top >= cut)
+                {
+                    tail.backgrounds.Add(bg with { YMpt = top - cut });
+                }
+                else
+                {
+                    // Clip the padding rectangle at the cut. Tiling phase restarts on the tail slice (a
+                    // minor artifact for the rare background image split across a page break).
+                    head.backgrounds.Add(bg with { HeightMpt = cut - top });
+                    tail.backgrounds.Add(bg with { YMpt = 0, HeightMpt = bottom - cut });
                 }
             }
 
@@ -1299,6 +1329,11 @@ public sealed class LayoutEngine
                 target.Add(r with { XMpt = r.XMpt + dx, YMpt = r.YMpt + dy });
             }
 
+            foreach (BackgroundImageArea bg in backgrounds)
+            {
+                target.Add(bg with { XMpt = bg.XMpt + dx, YMpt = bg.YMpt + dy });
+            }
+
             foreach (ImageRun img in images)
             {
                 target.Add(img with { XMpt = img.XMpt + dx, YMpt = img.YMpt + dy });
@@ -1373,6 +1408,26 @@ public sealed class LayoutEngine
 
         double rightMpt = leftMpt + widthMpt;
         double bottomMpt = topMpt + heightMpt;
+
+        // A background image fills the padding rectangle (inside any visible borders) and is clipped to
+        // it by the renderer, so it never overlaps the border edges painted below. Mirrors FOP's
+        // drawBackground, which insets by the border widths before tiling.
+        if (box.BackgroundImage is BackgroundImage backgroundImage)
+        {
+            double padLeft = leftMpt + (box.BorderLeft.IsVisible ? box.BorderLeft.Width.Millipoints : 0);
+            double padRight = rightMpt - (box.BorderRight.IsVisible ? box.BorderRight.Width.Millipoints : 0);
+            double padTop = topMpt + (paintTop && box.BorderTop.IsVisible ? box.BorderTop.Width.Millipoints : 0);
+            double padBottom = bottomMpt - (paintBottom && box.BorderBottom.IsVisible
+                ? box.BorderBottom.Width.Millipoints : 0);
+            double padWidth = padRight - padLeft;
+            double padHeight = padBottom - padTop;
+            if (padWidth > 0 && padHeight > 0)
+            {
+                target.Add(new BackgroundImageArea(padLeft, padTop, padWidth, padHeight,
+                    backgroundImage.Uri, SourceBytes: null, backgroundImage.Repeat,
+                    backgroundImage.PositionHorizontal, backgroundImage.PositionVertical));
+            }
+        }
 
         if (paintTop && box.BorderTop.IsVisible)
         {
@@ -2337,20 +2392,35 @@ public sealed class LayoutEngine
             // de-duplicate when a body fits entirely on the first page.
             List<LaidRow> laidHeader = LayOutRows(headerRows, columnWidths);
             double headerHeight = laidHeader.Sum(r => r.Height);
+            List<LaidRow> laidBody = LayOutRows(bodyRows, columnWidths);
+            List<LaidRow> laidFooter = LayOutRows(footerRows, columnWidths);
+
+            // The collapsing border model (border-collapse="collapse"): adjacent cells share a single
+            // border instead of each painting its own. With cells already abutting, this is rendered by
+            // painting each cell's before/start (top/left) borders always and its after/end (bottom/right)
+            // borders only on the table's outer edge -- so an interior shared edge is drawn once (by the
+            // cell below/after it). The last row band of the whole table paints the outer bottom edge.
+            // Conflict resolution by border width/style is not modelled (uniform borders collapse cleanly).
+            bool collapse = table.BorderCollapse;
+            LaidRow? lastBand = laidFooter.Count > 0 ? laidFooter[^1]
+                : laidBody.Count > 0 ? laidBody[^1]
+                : laidHeader.Count > 0 ? laidHeader[^1] : null;
 
             foreach (LaidRow row in laidHeader)
             {
-                PlaceRow(row, contentLeft, columnWidths, target);
+                PlaceRow(row, contentLeft, columnWidths, target, collapse, ReferenceEquals(row, lastBand));
             }
 
-            foreach (LaidRow laid in LayOutRows(bodyRows, columnWidths))
+            foreach (LaidRow laid in laidBody)
             {
-                PlaceRowPaginated(laid, contentLeft, columnWidths, laidHeader, headerHeight, target);
+                PlaceRowPaginated(laid, contentLeft, columnWidths, laidHeader, headerHeight, target,
+                    collapse, ReferenceEquals(laid, lastBand));
             }
 
-            foreach (LaidRow laid in LayOutRows(footerRows, columnWidths))
+            foreach (LaidRow laid in laidFooter)
             {
-                PlaceRowPaginated(laid, contentLeft, columnWidths, laidHeader, headerHeight, target);
+                PlaceRowPaginated(laid, contentLeft, columnWidths, laidHeader, headerHeight, target,
+                    collapse, ReferenceEquals(laid, lastBand));
             }
 
             target.Advance(this, tableBox.BottomInsetMpt);
@@ -2371,7 +2441,8 @@ public sealed class LayoutEngine
         /// Against a buffer target this never paginates -- the row is simply emitted at the local cursor.
         /// </summary>
         private void PlaceRowPaginated(LaidRow row, double contentLeft, double[] columnWidths,
-            List<LaidRow> header, double headerHeight, IBlockTarget target)
+            List<LaidRow> header, double headerHeight, IBlockTarget target,
+            bool collapse = false, bool isLastRowBand = false)
         {
             // A row taller than a whole empty content region can never fit on any page: rather than
             // overflow the region bottom, split it across pages at text-line boundaries. Only the
@@ -2407,12 +2478,13 @@ public sealed class LayoutEngine
             {
                 foreach (LaidRow h in header)
                 {
-                    EmitRowAt(target.SinkForAdvance(this, h.Height), h, contentLeft, target.Cursor(this), columnWidths);
+                    EmitRowAt(target.SinkForAdvance(this, h.Height), h, contentLeft, target.Cursor(this),
+                        columnWidths, collapse, isLastRowBand: false);
                     target.Advance(this, h.Height);
                 }
             }
 
-            PlaceRow(row, contentLeft, columnWidths, target);
+            PlaceRow(row, contentLeft, columnWidths, target, collapse, isLastRowBand);
         }
 
         /// <summary>
@@ -2619,7 +2691,8 @@ public sealed class LayoutEngine
         }
 
         /// <summary>Emits a laid-out row at the current cursor (no pagination) and advances the cursor.</summary>
-        private void PlaceRow(LaidRow row, double contentLeft, double[] columnWidths, IBlockTarget target)
+        private void PlaceRow(LaidRow row, double contentLeft, double[] columnWidths, IBlockTarget target,
+            bool collapse = false, bool isLastRowBand = false)
         {
             IPrimitiveSink sink = target.SinkForAdvance(this, row.Height);
 
@@ -2637,7 +2710,7 @@ public sealed class LayoutEngine
                 }
             }
 
-            EmitRowAt(sink, row, contentLeft, target.Cursor(this), columnWidths);
+            EmitRowAt(sink, row, contentLeft, target.Cursor(this), columnWidths, collapse, isLastRowBand);
             target.Advance(this, row.Height);
         }
 
@@ -2647,7 +2720,7 @@ public sealed class LayoutEngine
         /// offset to its content origin.
         /// </summary>
         private static void EmitRowAt(IPrimitiveSink sink, LaidRow row, double contentLeft, double rowTop,
-            double[] columnWidths)
+            double[] columnWidths, bool collapse = false, bool isLastRowBand = false)
         {
             // Row background/border spanning the whole row width.
             double rowWidth = 0;
@@ -2669,11 +2742,71 @@ public sealed class LayoutEngine
                 // page only (it may overflow that page's region bottom); per-page span fragments are
                 // future work.
                 double cellHeight = cell.SpannedHeightMpt > 0 ? cell.SpannedHeightMpt : row.Height;
-                EmitBox(sink, cell.Box, cellLeft, rowTop, cellWidth, cellHeight);
+                if (collapse)
+                {
+                    // Shared (interior) edges are painted by the cell below/after; this cell paints its
+                    // bottom only on the table's last row band and its right only on the last column.
+                    bool lastColumn = cell.StartColumn + cell.ColumnSpan >= columnWidths.Length;
+                    EmitCellBoxCollapsed(sink, cell.Box, cellLeft, rowTop, cellWidth, cellHeight,
+                        paintRight: lastColumn, paintBottom: isLastRowBand);
+                }
+                else
+                {
+                    EmitBox(sink, cell.Box, cellLeft, rowTop, cellWidth, cellHeight);
+                }
 
                 double contentX = cellLeft + cell.Box.LeftInsetMpt;
                 double contentY = rowTop + cell.Box.TopInsetMpt;
                 cell.Content.FlushTo(sink, contentX, contentY);
+            }
+        }
+
+        /// <summary>
+        /// Emits a cell's box under the collapsing border model: the background and the before/start
+        /// (top/left) border edges are always painted, while the after/end (bottom/right) edges are
+        /// painted only when this cell sits on the table's outer edge (<paramref name="paintBottom"/>/
+        /// <paramref name="paintRight"/>). Because cells abut, an interior shared edge is then drawn
+        /// exactly once -- by the cell that owns its before/start side -- giving a single collapsed
+        /// border line instead of two abutting ones.
+        /// </summary>
+        private static void EmitCellBoxCollapsed(IPrimitiveSink target, BoxProperties box, double leftMpt,
+            double topMpt, double widthMpt, double heightMpt, bool paintRight, bool paintBottom)
+        {
+            if (box.IsEmpty || widthMpt <= 0 || heightMpt <= 0)
+            {
+                return;
+            }
+
+            if (box.BackgroundColor is FopColor background)
+            {
+                target.Add(new RectFill(leftMpt, topMpt, widthMpt, heightMpt, background));
+            }
+
+            double rightMpt = leftMpt + widthMpt;
+            double bottomMpt = topMpt + heightMpt;
+
+            if (box.BorderTop.IsVisible)
+            {
+                target.Add(new RectFill(leftMpt, topMpt, widthMpt, box.BorderTop.Width.Millipoints,
+                    box.BorderTop.Color));
+            }
+
+            if (box.BorderLeft.IsVisible)
+            {
+                target.Add(new RectFill(leftMpt, topMpt, box.BorderLeft.Width.Millipoints, heightMpt,
+                    box.BorderLeft.Color));
+            }
+
+            if (paintRight && box.BorderRight.IsVisible)
+            {
+                double w = box.BorderRight.Width.Millipoints;
+                target.Add(new RectFill(rightMpt - w, topMpt, w, heightMpt, box.BorderRight.Color));
+            }
+
+            if (paintBottom && box.BorderBottom.IsVisible)
+            {
+                double h = box.BorderBottom.Width.Millipoints;
+                target.Add(new RectFill(leftMpt, bottomMpt - h, widthMpt, h, box.BorderBottom.Color));
             }
         }
 

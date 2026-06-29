@@ -304,6 +304,18 @@ public static class FoEnumParsing
     }
 
     /// <summary>
+    /// Parses a <c>background-repeat</c> keyword, defaulting to <see cref="BackgroundRepeat.Repeat"/>
+    /// for unset or unrecognised values.
+    /// </summary>
+    public static BackgroundRepeat ParseBackgroundRepeat(string? value) => value?.Trim().ToLowerInvariant() switch
+    {
+        "repeat-x" => BackgroundRepeat.RepeatX,
+        "repeat-y" => BackgroundRepeat.RepeatY,
+        "no-repeat" => BackgroundRepeat.NoRepeat,
+        _ => BackgroundRepeat.Repeat,
+    };
+
+    /// <summary>
     /// Parses a CSS/XSL-FO <c>border-style</c> keyword, defaulting to <see cref="BorderStyle.None"/>
     /// for unset or unrecognised values.
     /// </summary>

@@ -144,11 +144,13 @@ that stack with modern, cross-platform, managed libraries:
   `Fop.Imaging.ImageDimensions` is the first ImageSharp-backed utility (image identify) and the seed
   of the image pipeline.
 - **`Fop.Fo`** — the formatting-object layer: `FoLength`, the inheriting `PropertyList` (a modern
-  reformulation of FOP's PropertyMaker subsystem over a curated property set), `FONode`/`FObj`/`FOText`,
-  the concrete FOs (root, page masters, page-sequence, flow, block, inline), and the
-  `FoTreeBuilder` XML parser.
-- **`Fop.Layout`** — the area model (`AreaTree`/`PageArea`/`TextRun`), the `IFontMeasurer` contract,
-  and a `LayoutEngine` that stacks blocks, breaks lines (greedy), aligns/justifies, and paginates.
+  reformulation of FOP's PropertyMaker subsystem) backed by the `PropertyCatalog` (FOP's ~280
+  properties with inheritance/datatype/enum/initial-value) and a `PropertyValidator`,
+  `FONode`/`FObj`/`FOText`, the concrete FOs (root, page masters, page-sequence, flow, block, inline,
+  `fo:character`), and the `FoTreeBuilder` XML parser.
+- **`Fop.Layout`** — the area model (`AreaTree`/`PageArea`/`TextRun`/`BackgroundImageArea`), the
+  `IFontMeasurer` contract, and a `LayoutEngine` that stacks blocks, breaks lines (greedy),
+  aligns/justifies, and paginates; `BackgroundTiling` plans background-image tiling for the renderers.
 - **`Fop.Render.Pdf`** — renders the area tree to PDF via **PdfSharp**, with an embedded-Liberation
   `IFontResolver`, a PdfSharp-backed `IFontMeasurer`, and the high-level `FopProcessor` facade
   (FO in → PDF out).
@@ -179,11 +181,15 @@ that stack with modern, cross-platform, managed libraries:
 
 A **working end-to-end FO→PDF pipeline** exists for a substantial XSL-FO subset:
 - block/inline text, fonts, colour, alignment/justification, indents, pagination;
-- the **box model** (borders, padding, backgrounds), painted across page breaks, and
-  **external-graphic images**;
+- the **box model** (borders, padding, backgrounds — colour and **tiled `background-image`** with
+  `background-repeat`/`background-position`), painted across page breaks, and **external-graphic images**;
 - **tables** (%/proportional/absolute columns, header/body/footer, per-cell box, column & row
   spanning, row pagination with repeating headers; a row taller than a whole page splits across pages
-  at text-line boundaries);
+  at text-line boundaries; the collapsing border model via **`border-collapse="collapse"`**);
+- **`fo:character`** (a single styled glyph inline);
+- a **property catalogue + validation** layer: `PropertyCatalog` (FOP's ~280 properties with
+  inheritance/datatype/enum/initial-value) drives `PropertyList` inheritance, and `PropertyValidator`
+  flags unknown properties and malformed values;
 - **lists** (`fo:list-block` with provisional label/body geometry, nesting);
 - **static content** — running headers/footers via `fo:region-before`/`after` + `fo:static-content`,
   with `fo:page-number`;
@@ -224,7 +230,7 @@ A **working end-to-end FO→PDF pipeline** exists for a substantial XSL-FO subse
   `baseline - 1.1*capHeight`, line-through `baseline - 0.45*capHeight`); and **letter-spacing**
   (per-glyph tracking between glyphs, `(n-1)` gaps per word, drawn glyph-by-glyph).
 
-The solution has 17 library projects and **1,016 passing tests** on .NET 10. See `samples/hello.fo`
+The solution has 17 library projects and **1,086 passing tests** on .NET 10. See `samples/hello.fo`
 (a clickable TOC with leaders, links, a marker header, and page-number citations) and
 `samples/svg-decoration.fo` (embedded SVG, text-decoration and letter-spacing). The `fop` CLI renders
 a document with `fop in.fo out.pdf`.

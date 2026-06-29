@@ -190,4 +190,56 @@ public sealed class BoxModelLayoutTests
         // border box around the image = 4 border edges (no background).
         Assert.Equal(4, page.RectFills.Count);
     }
+
+    [Fact]
+    public void BackgroundImage_EmitsAreaCoveringPaddingRect()
+    {
+        // padding 4pt, no border => padding rect == border box; one line (12000) + 2*4000 = 20000 tall.
+        string body = "<fo:block font-size=\"10pt\" background-image=\"url('bg.png')\" "
+            + "background-repeat=\"no-repeat\" padding=\"4pt\">ab</fo:block>";
+        AreaTree tree = LayOut(Document(body, pageWidthPt: 100));
+        PageArea page = Assert.Single(tree.Pages);
+
+        BackgroundImageArea bg = Assert.Single(page.BackgroundImages);
+        Assert.Equal(0, bg.XMpt, 3);
+        Assert.Equal(0, bg.YMpt, 3);
+        Assert.Equal(100_000, bg.WidthMpt, 3);
+        Assert.Equal(20_000, bg.HeightMpt, 3);
+        Assert.Equal("bg.png", bg.SourcePath);
+        Assert.Equal(BackgroundRepeat.NoRepeat, bg.Repeat);
+    }
+
+    [Fact]
+    public void BackgroundImage_InsetByBorderWidths()
+    {
+        // border 2pt all round => padding rect is inset 2pt on each edge.
+        string body = "<fo:block font-size=\"10pt\" background-image=\"url('bg.png')\" "
+            + "border=\"2pt solid #000000\">ab</fo:block>";
+        AreaTree tree = LayOut(Document(body, pageWidthPt: 100));
+        PageArea page = Assert.Single(tree.Pages);
+
+        // box height = 2000 + 12000 + 2000 = 16000; padding rect inset 2pt each side.
+        BackgroundImageArea bg = Assert.Single(page.BackgroundImages);
+        Assert.Equal(2_000, bg.XMpt, 3);
+        Assert.Equal(2_000, bg.YMpt, 3);
+        Assert.Equal(100_000 - 4_000, bg.WidthMpt, 3);
+        Assert.Equal(16_000 - 4_000, bg.HeightMpt, 3);
+        // Borders still paint (4 edges); the background image is a separate primitive.
+        Assert.Equal(4, page.RectFills.Count);
+    }
+
+    [Fact]
+    public void BackgroundColorAndImage_BothEmitted()
+    {
+        string body = "<fo:block font-size=\"10pt\" background-color=\"#ffff00\" "
+            + "background-image=\"url('bg.png')\" padding=\"4pt\">ab</fo:block>";
+        AreaTree tree = LayOut(Document(body, pageWidthPt: 100));
+        PageArea page = Assert.Single(tree.Pages);
+
+        // Background colour is a RectFill (painted first), background image a separate area on top.
+        RectFill color = Assert.Single(page.RectFills);
+        Assert.Equal(255, color.Color.Red);
+        Assert.Equal(255, color.Color.Green);
+        Assert.Single(page.BackgroundImages);
+    }
 }

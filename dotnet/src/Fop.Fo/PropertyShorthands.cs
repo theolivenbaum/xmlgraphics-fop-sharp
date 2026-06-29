@@ -56,6 +56,15 @@ internal static class PropertyShorthands
             case "background-color":
                 return own.TryGetValue("background", out string? bg) ? BackgroundColor(bg) : null;
 
+            case "background-image":
+                return own.TryGetValue("background", out string? bgImg) ? BackgroundImage(bgImg) : null;
+
+            case "background-repeat":
+                return own.TryGetValue("background", out string? bgRep) ? BackgroundRepeat(bgRep) : null;
+
+            case "background-position":
+                return own.TryGetValue("background", out string? bgPos) ? BackgroundPosition(bgPos) : null;
+
             case "break-before":
                 return own.TryGetValue("page-break-before", out string? pbb) ? PageBreak(pbb) : null;
 
@@ -283,6 +292,60 @@ internal static class PropertyShorthands
         }
 
         return null;
+    }
+
+    /// <summary>The <c>url(...)</c> (or <c>none</c>) token of a <c>background</c> shorthand, if any.</summary>
+    private static string? BackgroundImage(string background)
+    {
+        foreach (string token in background.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries))
+        {
+            string t = token.Trim();
+            if (t.StartsWith("url(", StringComparison.OrdinalIgnoreCase)
+                || t.Equals("none", StringComparison.OrdinalIgnoreCase))
+            {
+                return t;
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>The repeat keyword of a <c>background</c> shorthand, if any.</summary>
+    private static string? BackgroundRepeat(string background)
+    {
+        foreach (string token in background.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries))
+        {
+            string t = token.Trim().ToLowerInvariant();
+            if (t is "repeat" or "repeat-x" or "repeat-y" or "no-repeat")
+            {
+                return t;
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// The position tokens of a <c>background</c> shorthand: the positional keywords
+    /// (<c>left</c>/<c>center</c>/<c>right</c>/<c>top</c>/<c>bottom</c>) and length/percentage tokens,
+    /// in order, joined for <see cref="BoxPropertyResolver"/> to split per axis.
+    /// </summary>
+    private static string? BackgroundPosition(string background)
+    {
+        var parts = new List<string>();
+        foreach (string token in background.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries))
+        {
+            string t = token.Trim();
+            string lower = t.ToLowerInvariant();
+            bool isKeyword = lower is "left" or "center" or "right" or "top" or "bottom";
+            bool isLength = t.Length > 0 && (char.IsDigit(t[0]) || t[0] is '.' or '-' or '+');
+            if (isKeyword || isLength)
+            {
+                parts.Add(t);
+            }
+        }
+
+        return parts.Count > 0 ? string.Join(' ', parts) : null;
     }
 
     private static string? PageBreak(string value) => value.Trim().ToLowerInvariant() switch

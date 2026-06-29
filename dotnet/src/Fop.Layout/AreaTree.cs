@@ -72,6 +72,7 @@ public sealed class PageArea
 {
     private readonly List<TextRun> textRuns = new();
     private readonly List<RectFill> rectFills = new();
+    private readonly List<BackgroundImageArea> backgroundImages = new();
     private readonly List<ImageRun> images = new();
     private readonly List<VectorPath> vectors = new();
     private readonly List<LinkArea> links = new();
@@ -95,6 +96,12 @@ public sealed class PageArea
 
     /// <summary>Filled rectangles (e.g. backgrounds, rules) on this page.</summary>
     public IReadOnlyList<RectFill> RectFills => rectFills;
+
+    /// <summary>
+    /// Tiled background images on this page. They paint after the flat <see cref="RectFills"/> (so a
+    /// background colour sits beneath the image) and before content <see cref="Images"/>/text.
+    /// </summary>
+    public IReadOnlyList<BackgroundImageArea> BackgroundImages => backgroundImages;
 
     /// <summary>Positioned images on this page.</summary>
     public IReadOnlyList<ImageRun> Images => images;
@@ -125,6 +132,13 @@ public sealed class PageArea
 
     /// <summary>Adds a filled rectangle.</summary>
     public void Add(RectFill rect) => rectFills.Add(rect);
+
+    /// <summary>Adds a tiled background image.</summary>
+    public void Add(BackgroundImageArea background)
+    {
+        ArgumentNullException.ThrowIfNull(background);
+        backgroundImages.Add(background);
+    }
 
     /// <summary>Adds a positioned image.</summary>
     public void Add(ImageRun image)
@@ -168,6 +182,7 @@ public sealed class AreaGroup
 {
     private readonly List<TextRun> textRuns = new();
     private readonly List<RectFill> rectFills = new();
+    private readonly List<BackgroundImageArea> backgroundImages = new();
     private readonly List<ImageRun> images = new();
     private readonly List<VectorPath> vectors = new();
     private readonly List<LinkArea> links = new();
@@ -197,6 +212,9 @@ public sealed class AreaGroup
     /// <summary>Filled rectangles in group-local coordinates.</summary>
     public IReadOnlyList<RectFill> RectFills => rectFills;
 
+    /// <summary>Tiled background images in group-local coordinates.</summary>
+    public IReadOnlyList<BackgroundImageArea> BackgroundImages => backgroundImages;
+
     /// <summary>Images in group-local coordinates.</summary>
     public IReadOnlyList<ImageRun> Images => images;
 
@@ -215,6 +233,13 @@ public sealed class AreaGroup
 
     /// <summary>Adds a filled rectangle (group-local coordinates).</summary>
     public void Add(RectFill rect) => rectFills.Add(rect);
+
+    /// <summary>Adds a tiled background image (group-local coordinates).</summary>
+    public void Add(BackgroundImageArea background)
+    {
+        ArgumentNullException.ThrowIfNull(background);
+        backgroundImages.Add(background);
+    }
 
     /// <summary>Adds an image (group-local coordinates).</summary>
     public void Add(ImageRun image)
@@ -355,6 +380,35 @@ public sealed record ImageRun(
     double HeightMpt,
     string? SourcePath,
     byte[]? SourceBytes);
+
+/// <summary>
+/// A tiled background image filling a box's <em>padding rectangle</em> (top-left origin, millipoints).
+/// The renderer resolves the image's intrinsic size, clips to (<see cref="XMpt"/>, <see cref="YMpt"/>,
+/// <see cref="WidthMpt"/>, <see cref="HeightMpt"/>) and tiles according to <see cref="Repeat"/>,
+/// offsetting a non-tiling axis by <see cref="PositionHorizontal"/>/<see cref="PositionVertical"/>
+/// (the percentage components resolved against the free space). Mirrors FOP's
+/// <c>AbstractPathOrientedRenderer.drawBackground</c>. The source is a filesystem path
+/// (<see cref="SourcePath"/>) or in-memory bytes (<see cref="SourceBytes"/>); at least one is set.
+/// </summary>
+/// <param name="XMpt">Padding-rectangle left edge.</param>
+/// <param name="YMpt">Padding-rectangle top edge.</param>
+/// <param name="WidthMpt">Padding-rectangle width.</param>
+/// <param name="HeightMpt">Padding-rectangle height.</param>
+/// <param name="SourcePath">The resolved filesystem path of the image, or <c>null</c> when bytes are supplied.</param>
+/// <param name="SourceBytes">The image bytes, or <c>null</c> when a path is supplied.</param>
+/// <param name="Repeat">How the image tiles.</param>
+/// <param name="PositionHorizontal">Horizontal position (applied when not tiling horizontally).</param>
+/// <param name="PositionVertical">Vertical position (applied when not tiling vertically).</param>
+public sealed record BackgroundImageArea(
+    double XMpt,
+    double YMpt,
+    double WidthMpt,
+    double HeightMpt,
+    string? SourcePath,
+    byte[]? SourceBytes,
+    Fop.Fo.BackgroundRepeat Repeat,
+    Fop.Fo.BackgroundPosition PositionHorizontal,
+    Fop.Fo.BackgroundPosition PositionVertical);
 
 /// <summary>
 /// A clickable link rectangle on a page (top-left origin, millipoints). A link targets either an

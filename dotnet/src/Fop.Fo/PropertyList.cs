@@ -25,36 +25,35 @@ namespace Fop.Fo;
 /// <para>
 /// This is a pragmatic, modern reformulation of FOP's <c>org.apache.fop.fo.PropertyList</c> +
 /// <c>PropertyMaker</c> machinery: rather than the full ~290-property maker system, it resolves the
-/// subset of properties the current layout/render pipeline understands. New properties slot in by
-/// extending <see cref="InheritedProperties"/> and adding a typed accessor.
+/// subset of properties the current layout/render pipeline understands. Inheritance is driven by the
+/// <see cref="PropertyCatalog"/>; new properties slot in by adding a typed accessor.
 /// </para>
 /// </summary>
 public sealed class PropertyList
 {
-    /// <summary>The XSL-FO properties that inherit from the parent formatting object.</summary>
-    private static readonly HashSet<string> InheritedProperties = new(StringComparer.Ordinal)
+    /// <summary>
+    /// Properties the <see cref="PropertyCatalog"/> marks inherited but which this engine applies
+    /// <em>positionally</em> (each formatting object resolves its own value against the area its parent
+    /// already positioned), so inheriting them through the property cascade would double-apply them.
+    /// They are therefore resolved non-inherited here, matching the engine's geometry. The full
+    /// (spec-correct) inheritance is recorded in the catalogue for the rest of the property set.
+    /// </summary>
+    private static readonly HashSet<string> NonInheritedAtRuntime = new(StringComparer.Ordinal)
     {
-        "color",
-        "font-family",
-        "font-size",
-        "font-style",
-        "font-weight",
-        "line-height",
-        "text-align",
-        "text-indent",
-        "language",
-        "country",
-        "white-space-collapse",
-        "wrap-option",
-        "hyphenate",
-        "hyphenation-character",
-        "hyphenation-remain-character-count",
-        "hyphenation-push-character-count",
-        "letter-spacing",
-        "word-spacing",
-        "widows",
-        "orphans",
+        "start-indent",
+        "end-indent",
+
+        // keep-together is inherited per the spec, but this engine treats it as a per-block keep
+        // context (a kept block is moved whole to the next page); inheriting "always" to every
+        // descendant would make unrelated nested blocks unsplittable. Resolved per element here.
+        "keep-together",
+        "keep-with-next",
+        "keep-with-previous",
     };
+
+    /// <summary>Whether a property inherits at resolution time (catalogue-driven, minus the exclusions).</summary>
+    private static bool IsRuntimeInherited(string name)
+        => PropertyCatalog.IsInherited(name) && !NonInheritedAtRuntime.Contains(PropertyCatalog.BaseName(name));
 
     private const double DefaultFontSizeMpt = 12_000;
 
@@ -96,7 +95,7 @@ public sealed class PropertyList
             return fromShorthand;
         }
 
-        if (InheritedProperties.Contains(name) && parent is not null)
+        if (parent is not null && IsRuntimeInherited(name))
         {
             return parent.GetRaw(name);
         }
@@ -106,6 +105,12 @@ public sealed class PropertyList
 
     /// <summary>Returns whether the property is declared locally (ignoring inheritance).</summary>
     public bool HasOwn(string name) => own.ContainsKey(name);
+
+    /// <summary>
+    /// The properties declared directly on this object (its own attributes), ignoring inheritance and
+    /// shorthand expansion. Used by <see cref="PropertyValidator"/> to validate the as-written values.
+    /// </summary>
+    public IReadOnlyDictionary<string, string> DeclaredProperties => own;
 
     /// <summary>Returns a string property value or <paramref name="default"/> if unset.</summary>
     public string GetString(string name, string @default) => GetRaw(name) ?? @default;
