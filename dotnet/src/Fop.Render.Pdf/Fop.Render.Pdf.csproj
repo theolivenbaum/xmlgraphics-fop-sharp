@@ -13,8 +13,8 @@
   </ItemGroup>
 
   <ItemGroup>
-    <!-- Official PdfSharp (latest preview), used for PDF output and font embedding. -->
-    <PackageReference Include="PdfSharp" Version="7.0.0-preview-1" />
+    <!-- Official PdfSharp, used for PDF output and font embedding. -->
+    <PackageReference Include="PDFsharp" Version="6.2.4" />
   </ItemGroup>
 
   <ItemGroup>
