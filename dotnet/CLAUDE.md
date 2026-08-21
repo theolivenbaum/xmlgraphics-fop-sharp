@@ -151,6 +151,12 @@ that stack with modern, cross-platform, managed libraries:
 - **`Fop.Layout`** — the area model (`AreaTree`/`PageArea`/`TextRun`/`BackgroundImageArea`), the
   `IFontMeasurer` contract, and a `LayoutEngine` that stacks blocks, breaks lines (greedy),
   aligns/justifies, and paginates; `BackgroundTiling` plans background-image tiling for the renderers.
+  `IResourceResolver` (the port of xmlgraphics' `ResourceResolver`, read half only) is the hook an
+  application supplies when its images are not files on disk: `LayoutEngine.ResourceResolver` is
+  asked for every `fo:external-graphic`/`background-image` URI before the file system is, and the
+  bytes it returns travel in the area tree's `SourceBytes` rather than as a path. `data:` URIs are
+  decoded here too (via `Fop.Util.DataURIResolver`). Resolution is cached per `LayOut` call, since
+  layout runs twice and an image may repeat on every page.
 - **`Fop.Render.Pdf`** — renders the area tree to PDF via **PdfSharp**, with an embedded-Liberation
   `IFontResolver`, a PdfSharp-backed `IFontMeasurer`, and the high-level `FopProcessor` facade
   (FO in → PDF out).
