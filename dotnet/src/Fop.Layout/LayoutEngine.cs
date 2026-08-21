@@ -120,6 +120,25 @@ public sealed class LayoutEngine
     public IImageResolver? ImageResolver => imageResolver;
 
     /// <summary>
+    /// Turns an image URI into bytes, for documents whose graphics are not files on the local disk.
+    /// <c>null</c> (the default) leaves every URI to the normal handling: a "data:" URI is still
+    /// decoded, and anything else is passed to the renderer as a path.
+    /// <para>
+    /// Consulted for <c>fo:external-graphic</c> and <c>background-image</c> alike. See
+    /// <see cref="IResourceResolver"/>.
+    /// </para>
+    /// </summary>
+    public IResourceResolver? ResourceResolver { get; set; }
+
+    /// <summary>
+    /// The bytes already fetched for a URI during this layout. Layout runs twice (page-number
+    /// citations need a first pass) and an image may repeat on every page, so without this a
+    /// resolver would be asked once per occurrence per pass. Cleared at the start of every
+    /// <see cref="LayOut"/> so a second document re-reads whatever the resolver now holds.
+    /// </summary>
+    private readonly Dictionary<string, byte[]?> resolvedResources = new(StringComparer.Ordinal);
+
+    /// <summary>
     /// The hyphenator consulted when a block enables <c>hyphenate</c> and a word does not fit on a line.
     /// Defaults to the embedded-pattern-backed <see cref="DefaultLineHyphenator"/>; tests may replace it
     /// with a deterministic stub. Setting it to <c>null</c> disables hyphenation entirely.
@@ -138,6 +157,8 @@ public sealed class LayoutEngine
     public AreaTree LayOut(FoRoot root)
     {
         ArgumentNullException.ThrowIfNull(root);
+
+        resolvedResources.Clear();
 
         // Pass 1: measure-only. Build the id-to-page map; citations render the placeholder.
         resolving = false;
@@ -162,6 +183,64 @@ public sealed class LayoutEngine
         // internal-destination to the page its target id lands on. Left empty when there is no tree.
         tree.Outline = BuildOutline(root, tree.Pages.Count);
         return tree;
+    }
+
+    /// <summary>
+    /// Turns an image URI into the pair the area tree carries: bytes when the engine could fetch
+    /// them, otherwise the URI passed through as a path for the renderer to open.
+    /// <para>
+    /// Two sources produce bytes. A "data:" URI is decoded here because it is self-contained and
+    /// there is nothing for a renderer to open; every other URI is offered to
+    /// <see cref="ResourceResolver"/>, which answers <c>null</c> for anything it does not have. A
+    /// URI nothing resolves keeps the historical behaviour exactly -- it is handed on as a path,
+    /// and a renderer that cannot open it draws the reserved area empty.
+    /// </para>
+    /// </summary>
+    private (string? Path, byte[]? Bytes) ResolveImageSource(string? uri)
+    {
+        if (string.IsNullOrEmpty(uri))
+        {
+            return (null, null);
+        }
+
+        if (resolvedResources.TryGetValue(uri, out byte[]? cached))
+        {
+            return cached is null ? (uri, null) : (null, cached);
+        }
+
+        byte[]? bytes = Fetch(uri);
+        resolvedResources[uri] = bytes;
+        return bytes is null ? (uri, null) : (null, bytes);
+    }
+
+    /// <summary>
+    /// Reads a URI's bytes, or returns <c>null</c> to leave it to the renderer. Never throws: an
+    /// unreadable image must degrade to an empty area, not fail the document, which is what FOP's
+    /// own image handling does.
+    /// </summary>
+    private byte[]? Fetch(string uri)
+    {
+        try
+        {
+            if (uri.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
+            {
+                return new Fop.Util.DataURIResolver().Resolve(uri);
+            }
+
+            using Stream? stream = ResourceResolver?.GetResource(uri);
+            if (stream is null)
+            {
+                return null;
+            }
+
+            using var buffer = new MemoryStream();
+            stream.CopyTo(buffer);
+            return buffer.Length > 0 ? buffer.ToArray() : null;
+        }
+        catch (Exception)
+        {
+            return null;
+        }
     }
 
     /// <summary>
@@ -1382,7 +1461,7 @@ public sealed class LayoutEngine
     /// is a thin filled rectangle laid along its side of the box; an edge only paints when it is
     /// visible (width &gt; 0 and a paintable style).
     /// </summary>
-    private static void EmitBox(IPrimitiveSink target, BoxProperties box, double leftMpt, double topMpt,
+    private void EmitBox(IPrimitiveSink target, BoxProperties box, double leftMpt, double topMpt,
         double widthMpt, double heightMpt)
         => EmitBoxSegment(target, box, leftMpt, topMpt, widthMpt, heightMpt, paintTop: true, paintBottom: true);
 
@@ -1393,7 +1472,7 @@ public sealed class LayoutEngine
     /// the last segment paints the bottom border, while the side borders and background paint on every
     /// segment. With both flags set this is the ordinary single-box case.
     /// </summary>
-    private static void EmitBoxSegment(IPrimitiveSink target, BoxProperties box, double leftMpt,
+    private void EmitBoxSegment(IPrimitiveSink target, BoxProperties box, double leftMpt,
         double topMpt, double widthMpt, double heightMpt, bool paintTop, bool paintBottom)
     {
         if (box.IsEmpty || widthMpt <= 0 || heightMpt <= 0)
@@ -1423,8 +1502,9 @@ public sealed class LayoutEngine
             double padHeight = padBottom - padTop;
             if (padWidth > 0 && padHeight > 0)
             {
+                (string? bgPath, byte[]? bgBytes) = ResolveImageSource(backgroundImage.Uri);
                 target.Add(new BackgroundImageArea(padLeft, padTop, padWidth, padHeight,
-                    backgroundImage.Uri, SourceBytes: null, backgroundImage.Repeat,
+                    bgPath, bgBytes, backgroundImage.Repeat,
                     backgroundImage.PositionHorizontal, backgroundImage.PositionVertical));
             }
         }
@@ -1489,6 +1569,12 @@ public sealed class LayoutEngine
     private sealed class FlowContext(LayoutEngine engine, PageGeometry geometry, AreaTree tree,
         int initialPageNumber)
     {
+        /// <summary>
+        /// The engine this flow belongs to. A nested type cannot reach an enclosing type's
+        /// primary-constructor parameter, and the block targets need the engine to paint a box.
+        /// </summary>
+        internal LayoutEngine Engine => engine;
+
         private PageArea? page;
         private double cursorY = geometry.ContentTopMpt;
 
@@ -1737,7 +1823,7 @@ public sealed class LayoutEngine
             double top = cursorY;
 
             var sink = new PageSink(page!);
-            EmitBox(sink, box, floatLeft, top, floatWidth, floatHeight);
+            engine.EmitBox(sink, box, floatLeft, top, floatWidth, floatHeight);
             buffer.FlushTo(sink, floatLeft + box.LeftInsetMpt, top + box.TopInsetMpt);
             engine.RecordIdsInSubtree(floatFo, currentPageNumber, IndexOfPage(page!));
 
@@ -2116,13 +2202,17 @@ public sealed class LayoutEngine
             BoxProperties box = graphic.Box;
 
             string source = graphic.Source;
-            string? path = source.Length > 0 ? source : null;
+
+            // The src may name a file, carry its own payload ("data:"), or mean something only the
+            // application understands -- an object key, a CMS id. ResolveImageSource turns the last
+            // two into bytes and leaves the first as a path.
+            (string? path, byte[]? bytes) = engine.ResolveImageSource(source.Length > 0 ? source : null);
 
             // Intrinsic size from the image (via the injected resolver, which reads pixel size + DPI).
             // When no resolver is set or the image cannot be read, fall back to a 72pt square so an
             // unsized graphic still reserves a visible, square placeholder area.
             double defaultSize = FoLength.FromPoints(72).Millipoints;
-            ImageIntrinsics? intrinsic = engine.ImageResolver?.Resolve(path, bytes: null);
+            ImageIntrinsics? intrinsic = engine.ImageResolver?.Resolve(path, bytes);
             double intrinsicWidth = intrinsic?.WidthMpt ?? defaultSize;
             double intrinsicHeight = intrinsic?.HeightMpt ?? defaultSize;
 
@@ -2140,9 +2230,9 @@ public sealed class LayoutEngine
             double imageX = leftMpt + box.LeftInsetMpt;
             double imageY = boxTop + box.TopInsetMpt;
 
-            sink.Add(new ImageRun(imageX, imageY, imageWidth, imageHeight, path, SourceBytes: null));
+            sink.Add(new ImageRun(imageX, imageY, imageWidth, imageHeight, path, bytes));
 
-            EmitBox(sink, box, leftMpt, boxTop, borderBoxWidth, borderBoxHeight);
+            engine.EmitBox(sink, box, leftMpt, boxTop, borderBoxWidth, borderBoxHeight);
 
             target.SetCursor(this, boxTop + borderBoxHeight);
             target.Advance(this, graphic.Properties.GetLength("space-after", FoLength.Zero).Millipoints);
@@ -2179,7 +2269,7 @@ public sealed class LayoutEngine
             double boxTop = target.Cursor(this);
 
             // Background/border behind the graphic.
-            EmitBox(sink, box, leftMpt, boxTop, borderBoxWidth, borderBoxHeight);
+            engine.EmitBox(sink, box, leftMpt, boxTop, borderBoxWidth, borderBoxHeight);
 
             if (graphic is not null)
             {
@@ -2666,7 +2756,7 @@ public sealed class LayoutEngine
         /// borders paint, so a split row's top border shows only on its first slice and its bottom border
         /// only on its last.
         /// </summary>
-        private static void EmitRowSegment(IPrimitiveSink sink, LaidRow row, double contentLeft,
+        private void EmitRowSegment(IPrimitiveSink sink, LaidRow row, double contentLeft,
             double rowTop, double[] columnWidths, bool paintTop, bool paintBottom)
         {
             double rowWidth = 0;
@@ -2675,14 +2765,14 @@ public sealed class LayoutEngine
                 rowWidth += columnWidths[c];
             }
 
-            EmitBoxSegment(sink, row.Box, contentLeft, rowTop, rowWidth, row.Height, paintTop, paintBottom);
+            engine.EmitBoxSegment(sink, row.Box, contentLeft, rowTop, rowWidth, row.Height, paintTop, paintBottom);
 
             foreach (LaidCell cell in row.Cells)
             {
                 double cellLeft = contentLeft + ColumnOffset(columnWidths, cell.StartColumn);
                 double cellWidth = SpannedWidth(columnWidths, cell.StartColumn, cell.ColumnSpan);
                 double cellHeight = cell.SpannedHeightMpt > 0 ? cell.SpannedHeightMpt : row.Height;
-                EmitBoxSegment(sink, cell.Box, cellLeft, rowTop, cellWidth, cellHeight, paintTop, paintBottom);
+                engine.EmitBoxSegment(sink, cell.Box, cellLeft, rowTop, cellWidth, cellHeight, paintTop, paintBottom);
 
                 double contentX = cellLeft + cell.Box.LeftInsetMpt;
                 double contentY = rowTop + cell.Box.TopInsetMpt;
@@ -2719,7 +2809,7 @@ public sealed class LayoutEngine
         /// <paramref name="rowTop"/>): each cell's box (background + borders) then its buffered content
         /// offset to its content origin.
         /// </summary>
-        private static void EmitRowAt(IPrimitiveSink sink, LaidRow row, double contentLeft, double rowTop,
+        private void EmitRowAt(IPrimitiveSink sink, LaidRow row, double contentLeft, double rowTop,
             double[] columnWidths, bool collapse = false, bool isLastRowBand = false)
         {
             // Row background/border spanning the whole row width.
@@ -2729,7 +2819,7 @@ public sealed class LayoutEngine
                 rowWidth += columnWidths[c];
             }
 
-            EmitBox(sink, row.Box, contentLeft, rowTop, rowWidth, row.Height);
+            engine.EmitBox(sink, row.Box, contentLeft, rowTop, rowWidth, row.Height);
 
             foreach (LaidCell cell in row.Cells)
             {
@@ -2752,7 +2842,7 @@ public sealed class LayoutEngine
                 }
                 else
                 {
-                    EmitBox(sink, cell.Box, cellLeft, rowTop, cellWidth, cellHeight);
+                    engine.EmitBox(sink, cell.Box, cellLeft, rowTop, cellWidth, cellHeight);
                 }
 
                 double contentX = cellLeft + cell.Box.LeftInsetMpt;
@@ -3086,7 +3176,7 @@ public sealed class LayoutEngine
             // plus the item's own insets. The inner content width is bodyLeftOffset + bodyWidth (the
             // provisional distance carries the label column and the label separation).
             double itemBorderWidth = bodyLeftOffset + bodyWidth + itemBox.LeftInsetMpt + itemBox.RightInsetMpt;
-            EmitBox(sink, itemBox, contentLeft, itemTop, itemBorderWidth, itemHeight);
+            engine.EmitBox(sink, itemBox, contentLeft, itemTop, itemBorderWidth, itemHeight);
 
             double innerTop = itemTop + itemBox.TopInsetMpt;
             labelBuffer.FlushTo(sink, innerLeft, innerTop);
@@ -3255,7 +3345,7 @@ public sealed class LayoutEngine
             if (rotation == 0)
             {
                 // Flat path: box behind the content, content inset from the border box.
-                EmitBox(sink, box, boxLeft, boxTop, borderWidth, borderHeight);
+                engine.EmitBox(sink, box, boxLeft, boxTop, borderWidth, borderHeight);
                 contentBuffer.FlushTo(sink, boxLeft + box.LeftInsetMpt, boxTop + box.TopInsetMpt);
                 return;
             }
@@ -3265,7 +3355,7 @@ public sealed class LayoutEngine
             // translation to (boxLeft, boxTop) plus the rotation. Groups are page-level.
             var group = new AreaGroup(boxLeft, boxTop, rotation);
             var groupSink = new GroupSink(group);
-            EmitBox(groupSink, box, 0, 0, borderWidth, borderHeight);
+            engine.EmitBox(groupSink, box, 0, 0, borderWidth, borderHeight);
             contentBuffer.FlushTo(groupSink, box.LeftInsetMpt, box.TopInsetMpt);
             PageForContainer().Add(group);
         }
@@ -3368,7 +3458,7 @@ public sealed class LayoutEngine
             public object BeginBox(FlowContext ctx) => buffer;
 
             public void EndBox(FlowContext ctx, object anchor, BoxProperties box, double leftMpt, double boxTop,
-                double widthMpt) => EmitBox(buffer, box, leftMpt, boxTop, widthMpt, LocalCursor - boxTop);
+                double widthMpt) => ctx.Engine.EmitBox(buffer, box, leftMpt, boxTop, widthMpt, LocalCursor - boxTop);
         }
 
         /// <summary>
@@ -3441,7 +3531,7 @@ public sealed class LayoutEngine
             if (startIndex < 0 || endIndex < 0 || endIndex <= startIndex)
             {
                 // Single page (or pages not both attached): one box from top to bottom.
-                EmitBox(new PageSink(startPage), box, leftMpt, boxTop, widthMpt, boxBottom - boxTop);
+                engine.EmitBox(new PageSink(startPage), box, leftMpt, boxTop, widthMpt, boxBottom - boxTop);
                 return;
             }
 
@@ -3452,7 +3542,7 @@ public sealed class LayoutEngine
                 bool last = i == endIndex;
                 double segTop = first ? boxTop : geometry.ContentTopMpt;
                 double segBottom = last ? boxBottom : geometry.ContentBottomMpt;
-                EmitBoxSegment(new PageSink(seg), box, leftMpt, segTop, widthMpt, segBottom - segTop,
+                engine.EmitBoxSegment(new PageSink(seg), box, leftMpt, segTop, widthMpt, segBottom - segTop,
                     paintTop: first, paintBottom: last);
             }
         }

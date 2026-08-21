@@ -52,6 +52,29 @@ public sealed class FopProcessor
     }
 
     /// <summary>
+    /// Turns an image URI into bytes, for documents whose graphics are not files on the local disk
+    /// -- a content management system, an object store, a zip, a database.
+    /// <para>
+    /// Consulted for every <c>fo:external-graphic</c> and <c>background-image</c> URI before the
+    /// file system is; returning <c>null</c> for a URI leaves it to the normal handling, so a
+    /// resolver covering one scheme need not know about any other. A "data:" URI is decoded
+    /// whether or not a resolver is set.
+    /// </para>
+    /// <code>
+    /// var processor = new FopProcessor
+    /// {
+    ///     ResourceResolver = ResourceResolvers.FromDelegate(
+    ///         uri =&gt; uri.StartsWith("icn:") ? store.Open(uri[4..]) : null),
+    /// };
+    /// </code>
+    /// </summary>
+    public IResourceResolver? ResourceResolver
+    {
+        get => layoutEngine.ResourceResolver;
+        set => layoutEngine.ResourceResolver = value;
+    }
+
+    /// <summary>
     /// The font registry used by both the measurer and the PdfSharp resolver. Register TTF/OTF fonts
     /// here (before conversion) to make custom families available to documents; unregistered families
     /// fall back to the embedded Liberation faces.

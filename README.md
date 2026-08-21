@@ -96,6 +96,34 @@ Use the native, PdfSharp-free renderer (supports font subsetting and encryption)
 byte[] pdf = processor.ConvertNative(File.ReadAllText("input.fo"));
 ```
 
+### Resolve images that are not files (library)
+
+An `fo:external-graphic` or a `background-image` normally names a file on the local disk. When a
+document's illustrations live somewhere else -- a content management system, an object store, a
+zip, a database -- set a `ResourceResolver` and the engine asks it for the bytes instead of
+writing every image out to a temporary file first:
+
+```csharp
+using Fop.Layout;
+
+var processor = new FopProcessor
+{
+    ResourceResolver = ResourceResolvers.FromDelegate(
+        uri => uri.StartsWith("icn:") ? store.Open(uri[4..]) : null),
+};
+
+processor.ConvertFile("input.fo", "output.pdf");
+```
+
+The resolver is consulted for every image URI before the file system is; returning `null` for a
+URI leaves it to the normal handling, so a resolver covering one scheme need not know about any
+other. A URI nothing resolves is passed to the renderer as a path exactly as before, and an image
+that cannot be read leaves its area empty rather than failing the document.
+
+`ResourceResolvers` also has `Directory(...)` (files under fixed base directories, looked up by the
+URI's last segment), `Compose(...)` (first resolver that has the URI wins) and `None`. RFC 2397
+`data:` URIs are decoded whether or not a resolver is set.
+
 ### Render to plain text, Markdown or HTML (library)
 
 ```csharp
