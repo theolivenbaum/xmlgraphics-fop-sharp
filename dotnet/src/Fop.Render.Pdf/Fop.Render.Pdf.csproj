@@ -14,7 +14,7 @@
 
   <ItemGroup>
     <!-- Official PdfSharp, used for PDF output and font embedding. -->
-    <PackageReference Include="PDFsharp" Version="6.2.4" />
+    <PackageReference Include="PdfSharp" Version="[6.5.0]" />
   </ItemGroup>
 
   <ItemGroup>
